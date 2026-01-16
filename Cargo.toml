@@ -1,0 +1,12 @@
+[package]
+name = "pbr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.29"
+wgpu = "0.19"
+pollster = "0.3"
+glam = "0.25"
+encase = { version = "0.7", features = ["glam"] }
+bytemuck = { version = "1.14", features = ["derive"] }
