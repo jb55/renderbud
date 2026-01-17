@@ -1,18 +1,9 @@
-// Cargo.toml deps (recent-ish):
-
-use encase::{ShaderType, internal::WriteInto};
-use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
-};
-
 use glam::{Mat4, Vec2, Vec3};
 
 use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::Model;
 use crate::model::Vertex;
-use crate::model::load_gltf_model;
+use encase::{ShaderType, internal::WriteInto};
 
 mod material;
 mod model;
@@ -62,7 +53,7 @@ struct GpuData<R> {
     staging: Vec<u8>,
 }
 
-struct State {
+pub struct Renderbud {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -78,7 +69,9 @@ struct State {
     object: GpuData<ObjectUniform>,
     material: GpuData<MaterialUniform>,
 
-    model: Model,
+    material_bgl: wgpu::BindGroupLayout,
+
+    model: Option<Model>,
 
     start: std::time::Instant,
 }
@@ -218,8 +211,8 @@ async fn _check_adapters(instance: &wgpu::Instance) {
     eprintln!("adapter without surface? {}", any_adapter.is_some());
 }
 
-impl State {
-    async fn new(window: winit::window::Window) -> Self {
+impl Renderbud {
+    pub async fn new(window: winit::window::Window) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::default();
@@ -318,54 +311,9 @@ impl State {
             multiview: None,
         });
 
-        /*
-        let test_mesh = {
-            let vertices: Vec<Vertex> = vec![
-                Vertex {
-                    pos: [-0.8, -0.8, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [0.0, 1.0],
-                },
-                Vertex {
-                    pos: [0.8, -0.8, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [1.0, 1.0],
-                },
-                Vertex {
-                    pos: [0.8, 0.8, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [1.0, 0.0],
-                },
-                Vertex {
-                    pos: [-0.8, 0.8, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [0.0, 0.0],
-                },
-            ];
-            let indices: Vec<u16> = vec![0, 1, 2, 0, 2, 3];
-            let num_indices = indices.len() as u32;
-
-            let vert_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vert_buf"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let ind_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("ind_buf"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-            Mesh {
-                vert_buf,
-                ind_buf,
-                num_indices,
-            }
-        };
-        */
-
         let (depth_tex, depth_view) = create_depth(&device, &config);
 
+        /* TODO: move to example
         let model = load_gltf_model(
             &device,
             &queue,
@@ -373,6 +321,9 @@ impl State {
             "/home/jb55/var/models/ironwood/ironwood.glb",
         )
         .unwrap();
+        */
+
+        let model = None;
 
         Self {
             surface,
@@ -384,6 +335,7 @@ impl State {
             globals,
             object,
             material,
+            material_bgl,
             model,
             depth_tex,
             depth_view,
@@ -391,11 +343,23 @@ impl State {
         }
     }
 
+    pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.size
+    }
+
     fn globals_mut(&mut self) -> &mut Globals {
         &mut self.globals.data
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    pub fn set_model(&mut self, model: Model) {
+        self.model = Some(model);
+    }
+
+    pub fn load_gltf_model(&self, path: impl AsRef<std::path::Path>) -> Result<Model, gltf::Error> {
+        crate::model::load_gltf_model(&self.device, &self.queue, &self.material_bgl, path)
+    }
+
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         let width = new_size.width.max(1);
         let height = new_size.height.max(1);
 
@@ -413,10 +377,10 @@ impl State {
         self.depth_view = depth_view;
     }
 
-    fn update(&mut self) {
+    pub fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
-        let t = self.globals_mut().time * 0.1;
+        //let t = self.globals_mut().time * 0.3;
         //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);
 
         // Example: slowly rotate the test mesh so you can verify transforms
@@ -428,7 +392,7 @@ impl State {
         write_gpu_data(&self.queue, &mut self.material);
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -470,11 +434,13 @@ impl State {
             rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
             rpass.set_bind_group(1, &self.object.bindgroup, &[]); // <-- add this
 
-            for d in &self.model.draws {
-                rpass.set_bind_group(2, &self.model.materials[d.material_index].bindgroup, &[]);
-                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+            if let Some(model) = self.model.as_ref() {
+                for d in &model.draws {
+                    rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
+                    rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                    rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+                }
             }
 
             //rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
@@ -493,53 +459,6 @@ fn write_gpu_data<R: ShaderType + WriteInto>(queue: &wgpu::Queue, state: &mut Gp
     let mut storage = encase::UniformBuffer::new(&mut state.staging);
     storage.write(&state.data).unwrap();
     queue.write_buffer(&state.buffer, 0, storage.as_ref());
-}
-
-fn main() {
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new()
-        .with_title("wgpu hello (ACNH-ish / Overwatch-ish)")
-        .build(&event_loop)
-        .unwrap();
-
-    let mut state = pollster::block_on(State::new(window));
-
-    event_loop
-        .run(move |event, elwt| {
-            elwt.set_control_flow(ControlFlow::Poll);
-
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(sz) => state.resize(sz),
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if let KeyEvent {
-                            physical_key: winit::keyboard::PhysicalKey::Code(code),
-                            state: ElementState::Pressed,
-                            ..
-                        } = event
-                        {
-                            match code {
-                                winit::keyboard::KeyCode::Space => {}
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                Event::AboutToWait => {
-                    state.update();
-                    match state.render() {
-                        Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                        Err(_) => {}
-                    }
-                }
-                _ => {}
-            }
-        })
-        .unwrap();
 }
 
 fn create_depth(

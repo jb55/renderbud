@@ -1170,20 +1170,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pbr"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "encase",
- "glam",
- "gltf",
- "image",
- "pollster",
- "wgpu",
- "winit",
-]
-
-[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1340,6 +1326,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49f3fe0889e69e2ae9e41f4d6c4c0181701d00e4697b356fb1f74173a5e0ee27"
 dependencies = [
  "bitflags 2.10.0",
+]
+
+[[package]]
+name = "renderbud"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "encase",
+ "glam",
+ "gltf",
+ "image",
+ "pollster",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
