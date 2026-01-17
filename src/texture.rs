@@ -12,7 +12,7 @@ pub fn make_1x1_rgba8(
     };
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: extent.clone(),
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -65,7 +65,7 @@ pub fn upload_rgba8_texture_2d(
     label: &str,
 ) -> wgpu::TextureView {
     assert_eq!(rgba.len(), (width * height * 4) as usize);
-    assert!(rgba.len() != 0);
+    assert!(!rgba.is_empty());
 
     let extent = wgpu::Extent3d {
         width,
@@ -74,7 +74,7 @@ pub fn upload_rgba8_texture_2d(
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: extent.clone(),
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -88,10 +88,10 @@ pub fn upload_rgba8_texture_2d(
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize; // 256
 
     // CEIL division to next multiple of 256
-    let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
 
     assert!(padded_bytes_per_row >= unpadded_bytes_per_row);
-    assert!(padded_bytes_per_row % align == 0);
+    assert!(padded_bytes_per_row.is_multiple_of(align));
 
     let mut padded = vec![0u8; padded_bytes_per_row * height as usize];
     for y in 0..height as usize {

@@ -82,7 +82,7 @@ impl GltfWgpuCache {
         srgb: bool,
     ) -> (usize, bool) {
         let key = (tex.index(), srgb);
-        if !self.tex_views.contains_key(&key) {
+        self.tex_views.entry(key).or_insert_with(|| {
             let img = &images[tex.source().index()];
             let rgba8 = build_rgba(img);
 
@@ -92,11 +92,10 @@ impl GltfWgpuCache {
                 wgpu::TextureFormat::Rgba8Unorm
             };
 
-            let view = upload_rgba8_texture_2d(
+            upload_rgba8_texture_2d(
                 device, queue, img.width, img.height, &rgba8, format, "gltf_tex",
-            );
-            self.tex_views.insert(key, view);
-        }
+            )
+        });
         key
     }
 
@@ -452,6 +451,7 @@ fn map_mag_filter(f: Option<gltf::texture::MagFilter>) -> wgpu::FilterMode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_material_gpu(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -464,7 +464,7 @@ fn make_material_gpu(
 ) -> MaterialGpu {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("material_ubo"),
-        size: MaterialUniform::min_size().get() as u64,
+        size: MaterialUniform::min_size().get(),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });

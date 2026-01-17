@@ -32,7 +32,7 @@ pub fn make_material_gpudata(
 
     let material_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("material"),
-        size: MaterialUniform::min_size().get() as u64,
+        size: MaterialUniform::min_size().get(),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });

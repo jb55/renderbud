@@ -98,7 +98,7 @@ fn make_global_gpudata(
 
     println!("Globals size = {}", std::mem::size_of::<Globals>());
 
-    let ubo_size = Globals::min_size().get() as u64;
+    let ubo_size = Globals::min_size().get();
 
     let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("globals"),
@@ -143,7 +143,7 @@ fn make_global_gpudata(
 
 fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::BindGroupLayout) {
     let object_uniform = ObjectUniform::from_model(Mat4::IDENTITY);
-    let object_ubo_size = ObjectUniform::min_size().get() as u64;
+    let object_ubo_size = ObjectUniform::min_size().get();
 
     let object_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("object"),
