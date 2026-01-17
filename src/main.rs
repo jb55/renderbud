@@ -1,7 +1,6 @@
 // Cargo.toml deps (recent-ish):
 
 use encase::ShaderType;
-use glam::{Vec2, Vec3};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -9,13 +8,14 @@ use winit::{
 };
 
 use glam::{Mat4, Vec2, Vec3};
+use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     pos: [f32; 3],
     nrm: [f32; 3],
-    uv:  [f32; 2],
+    uv: [f32; 2],
 }
 
 impl Vertex {
@@ -78,7 +78,7 @@ struct State {
     size: winit::dpi::PhysicalSize<u32>,
 
     depth_tex: wgpu::Texture,
-    depth_texview: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
 
     pipeline: wgpu::RenderPipeline,
     globals: Globals,
@@ -92,10 +92,9 @@ struct State {
 }
 
 struct Mesh {
-    let vertices: Vec<Vertex>,
-    let indices: Vec<u16>,
-    let vert_buf: Buffer,
-    let ind_buf: Buffer,
+    num_indices: u32,
+    vert_buf: wgpu::Buffer,
+    ind_buf: wgpu::Buffer,
 }
 
 impl State {
@@ -147,23 +146,18 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let globals = {
-
-            let view = Mat4::look_at_rh(eye, target, up);
-            let proj = Mat4::perspective_rh_gl(45f32.to_radians(), config.width as f32 / config.height as f32, 0.1, 100.0);
-
-            Globals {
-                time: 0.0,
-                _pad0: 0.0,
-                _pad3: 0.0,
-                resolution: Vec2::new(config.width as f32, config.height as f32),
-                _pad1: 0.0,
-                cam_pos: eye,
-                _pad2: 0.0,
-                light_dir: Vec3::new(0.4, 0.7, 0.2),
-                light_color: Vec3::new(1.0, 0.98, 0.92),
-                view_proj: proj * view;
-            }
+        let eye = Vec3::new(0.0, 0.8, 2.5);
+        let globals = Globals {
+            time: 0.0,
+            _pad0: 0.0,
+            _pad3: 0.0,
+            resolution: Vec2::new(config.width as f32, config.height as f32),
+            _pad1: 0.0,
+            cam_pos: eye,
+            _pad2: 0.0,
+            light_dir: Vec3::new(0.4, 0.7, 0.2),
+            light_color: Vec3::new(1.0, 0.98, 0.92),
+            view_proj: Self::calc_view_proj(eye, config.width as f32, config.height as f32),
         };
 
         println!("Globals size = {}", std::mem::size_of::<Globals>());
@@ -181,7 +175,7 @@ impl State {
             label: Some("globals_bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -217,7 +211,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[], // full-screen triangle, no vertex buffer
+                buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -232,7 +226,13 @@ impl State {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
@@ -241,30 +241,49 @@ impl State {
 
         let test_mesh = {
             let vertices: Vec<Vertex> = vec![
-                Vertex { pos: [-0.8, -0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [0.0, 1.0] },
-                Vertex { pos: [ 0.8, -0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [1.0, 1.0] },
-                Vertex { pos: [ 0.8,  0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [1.0, 0.0] },
-                Vertex { pos: [-0.8,  0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [0.0, 0.0] },
+                Vertex {
+                    pos: [-0.8, -0.8, 0.0],
+                    nrm: [0.0, 0.0, 1.0],
+                    uv: [0.0, 1.0],
+                },
+                Vertex {
+                    pos: [0.8, -0.8, 0.0],
+                    nrm: [0.0, 0.0, 1.0],
+                    uv: [1.0, 1.0],
+                },
+                Vertex {
+                    pos: [0.8, 0.8, 0.0],
+                    nrm: [0.0, 0.0, 1.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    pos: [-0.8, 0.8, 0.0],
+                    nrm: [0.0, 0.0, 1.0],
+                    uv: [0.0, 0.0],
+                },
             ];
             let indices: Vec<u16> = vec![0, 1, 2, 0, 2, 3];
+            let num_indices = indices.len() as u32;
 
             let vert_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vert_buf"),
-                contents: bytemuck::cast_slice(vertices),
+                contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
             let ind_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("ind_buf"),
-                contents: bytemuck::cast_slice(indices),
+                contents: bytemuck::cast_slice(&indices),
                 usage: wgpu::BufferUsages::INDEX,
             });
 
             Mesh {
-                vert_buf, ind_buf, indices, vertices
+                vert_buf,
+                ind_buf,
+                num_indices,
             }
         };
 
-        let (depth_tex, depth_texview) = create_depth(&device, &config);
+        let (depth_tex, depth_view) = create_depth(&device, &config);
 
         Self {
             surface,
@@ -279,7 +298,7 @@ impl State {
             globals_staging,
             test_mesh,
             depth_tex,
-            depth_texview,
+            depth_view,
             start: std::time::Instant::now(),
         }
     }
@@ -294,15 +313,15 @@ impl State {
         self.globals.resolution = Vec2::new(width as f32, height as f32);
         self.surface.configure(&self.device, &self.config);
 
-        self.globals.view_proj = Self::calc_view_proj(width as f32, height as f32);
+        self.globals.view_proj =
+            Self::calc_view_proj(self.globals.cam_pos, width as f32, height as f32);
 
-        let (depth_tex, depth_texview) = create_depth(&self.device, &self.config);
+        let (depth_tex, depth_view) = create_depth(&self.device, &self.config);
         self.depth_tex = depth_tex;
-        self.depth_texview = depth_texview;
+        self.depth_view = depth_view;
     }
 
-    fn calc_view_proj(width: f32, height: f32) -> Mat4 {
-        let eye = Vec3::new(0.0, 0.8, 2.5);
+    fn calc_view_proj(eye: Vec3, width: f32, height: f32) -> Mat4 {
         let target = Vec3::new(0.0, 0.0, 0.0);
         let up = Vec3::Y;
 
@@ -350,14 +369,23 @@ impl State {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
 
             rpass.set_pipeline(&self.pipeline);
             rpass.set_bind_group(0, &self.globals_bg, &[]);
-            rpass.draw(0..3, 0..1); // full-screen triangle
+            rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
+            rpass.set_index_buffer(self.test_mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..self.test_mesh.num_indices, 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -403,8 +431,7 @@ fn main() {
                         } = event
                         {
                             match code {
-                                winit::keyboard::KeyCode::Space => {
-                                }
+                                winit::keyboard::KeyCode::Space => {}
                                 _ => {}
                             }
                         }
@@ -426,8 +453,15 @@ fn main() {
         .unwrap();
 }
 
-fn create_depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> (wgpu::Texture, wgpu::TextureView) {
-    let size = wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 };
+fn create_depth(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width: config.width,
+        height: config.height,
+        depth_or_array_layers: 1,
+    };
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth"),
         size,

@@ -1,4 +1,4 @@
-let PI: f32 = 3.14159265;
+const PI: f32 = 3.14159265;
 
 struct Globals {
     time: f32,
@@ -13,27 +13,37 @@ struct Globals {
 
     light_color: vec3<f32>,
     _pad2: f32,
+
+    view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
 var<uniform> globals: Globals;
 
+struct VSIn {
+  @location(0) pos: vec3<f32>,
+  @location(1) nrm: vec3<f32>,
+  @location(2) uv:  vec2<f32>,
+};
+
 struct VSOut {
-  @builtin(position) pos: vec4<f32>,
-  @location(0) uv: vec2<f32>,
+  @builtin(position) clip: vec4<f32>,
+  @location(0) world_pos: vec3<f32>,
+  @location(1) world_nrm: vec3<f32>,
+  @location(2) uv: vec2<f32>,
 };
 
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VSOut {
-  // Full-screen triangle
-  var p = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0, -3.0),
-    vec2<f32>( 3.0,  1.0),
-    vec2<f32>(-1.0,  1.0)
-  );
+fn vs_main(v: VSIn) -> VSOut {
   var out: VSOut;
-  out.pos = vec4<f32>(p[vid], 0.0, 1.0);
-  out.uv = (out.pos.xy * 0.5) + vec2<f32>(0.5);
+
+  // For now: identity model matrix. Next step is per-object transforms.
+  let world = vec4<f32>(v.pos, 1.0);
+  out.world_pos = world.xyz;
+  out.world_nrm = normalize(v.nrm);
+  out.uv = v.uv;
+
+  out.clip = globals.view_proj * world;
   return out;
 }
 
@@ -79,88 +89,52 @@ fn ray_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-  // alias
   let G = globals;
 
-  // screen ray
-  let aspect = G.resolution.x / G.resolution.y;
-  let p = (in.uv * 2.0 - vec2<f32>(1.0)) * vec2<f32>(aspect, 1.0);
+  let N = normalize(in.world_nrm);
+  let V = normalize(G.cam_pos - in.world_pos);
+  let L = normalize(-G.light_dir);
+  let H = normalize(V + L);
 
-  let ro = G.cam_pos;
-  let rd = normalize(vec3<f32>(p, -1.3));
+  let NoL = saturate(dot(N, L));
+  let NoV = saturate(dot(N, V));
+  let NoH = saturate(dot(N, H));
+  let VoH = saturate(dot(V, H));
 
-  let sphere_c = vec3<f32>(0.0, 0.0, 0.0);
-  let t = ray_sphere(ro, rd, sphere_c, 0.6);
+  // TEMP material constants (textures later)
+  let baseColor = vec3<f32>(0.25, 0.60, 0.95);
+  let metallic: f32 = 0.05;
+  let roughness_in: f32 = 0.65;
+  let ao: f32 = 0.75;
 
-  // background
-  var col = mix(
-      vec3<f32>(0.10, 0.12, 0.15),
-      vec3<f32>(0.02, 0.03, 0.05),
-      in.uv.y
-  );
+  let roughness = clamp(roughness_in, 0.04, 1.0);
+  let alpha = roughness * roughness;
 
-  if (t > 0.0) {
-    let pos = ro + rd * t;
-    let N = normalize(pos - sphere_c);
-    let V = normalize(ro - pos);
-    let L = normalize(-G.light_dir);
-    let H = normalize(V + L);
+  let F0 = mix(vec3<f32>(0.04), baseColor, metallic);
+  let diffuseColor = baseColor * (1.0 - metallic);
 
-    let NoL = saturate(dot(N, L));
-    let NoV = saturate(dot(N, V));
-    let NoH = saturate(dot(N, H));
-    let VoH = saturate(dot(V, H));
+  let D = ggx_ndf(NoH, alpha);
+  let Gg = smith_g_schlick_ggx(NoV, NoL, alpha);
+  let F = fresnel_schlick(VoH, F0);
 
-    // --- "glTF material" constants for now (later: textures) ---
-    // Base color in linear space (when using textures, decode sRGB -> linear)
-    let baseColor = vec3<f32>(0.25, 0.60, 0.95);
+  let denom = max(4.0 * NoV * NoL, 1e-4);
+  let spec = (D * Gg) * F / denom;
 
-    // Metallic-roughness workflow
-    let metallic: f32 = 0.05;       // try 0..1
-    let roughness_in: f32 = 0.65;   // try 0..1
+  let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+  let diff = kd * diffuse_lambert(diffuseColor);
 
-    // AO / "flat darkness": 1 = none, 0 = very occluded
-    let ao: f32 = 0.75;
+  let direct = (diff + spec) * (G.light_color * NoL);
 
-    // Avoid singular highlights
-    let roughness = clamp(roughness_in, 0.04, 1.0);
-    let alpha = roughness * roughness;
+  let ambientIntensity = 0.25;
+  let ambient = diffuseColor * ambientIntensity * ao;
 
-    // glTF standard mixing:
-    // Dielectric F0 ≈ 0.04, metals use baseColor as F0
-    let F0 = mix(vec3<f32>(0.04), baseColor, metallic);
-    let diffuseColor = baseColor * (1.0 - metallic);
+  var col = direct + ambient;
 
-    // Specular BRDF
-    let D = ggx_ndf(NoH, alpha);
-    let Gg = smith_g_schlick_ggx(NoV, NoL, alpha);
-    let F = fresnel_schlick(VoH, F0);
+  let rim = pow(1.0 - NoV, 2.0) * 0.08;
+  col += rim * vec3<f32>(0.8, 0.9, 1.0);
 
-    let denom = max(4.0 * NoV * NoL, 1e-4);
-    let spec = (D * Gg) * F / denom;
-
-    // Energy conservation (diffuse reduced by Fresnel)
-    let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
-    let diff = kd * diffuse_lambert(diffuseColor);
-
-    // Direct lighting
-    let direct = (diff + spec) * (G.light_color * NoL);
-
-    // Ambient (fake IBL): AO only affects ambient/indirect
-    // This is the "ACNH-ish darkness" knob.
-    let ambientIntensity = 0.25;
-    let ambient = diffuseColor * ambientIntensity * ao;
-
-    col = direct + ambient;
-
-    // Optional: tiny rim for readability (stylized, but subtle)
-    let rim = pow(1.0 - NoV, 2.0) * 0.08;
-    col += rim * vec3<f32>(0.8, 0.9, 1.0);
-
-    // Simple tonemap + gamma
-    col = col / (col + vec3<f32>(1.0));
-    col = pow(col, vec3<f32>(1.0 / 2.2));
-  }
+  col = col / (col + vec3<f32>(1.0));
+  col = pow(col, vec3<f32>(1.0 / 2.2));
 
   return vec4<f32>(sat3(col), 1.0);
 }
