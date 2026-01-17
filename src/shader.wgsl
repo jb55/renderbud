@@ -1,3 +1,5 @@
+let PI: f32 = 3.14159265;
+
 struct Globals {
     time: f32,
     _pad0: f32,
@@ -15,8 +17,6 @@ struct Globals {
 
 @group(0) @binding(0)
 var<uniform> globals: Globals;
-
-@group(0) @binding(0) var<uniform> G: Globals;
 
 struct VSOut {
   @builtin(position) pos: vec4<f32>,
@@ -40,23 +40,32 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VSOut {
 fn saturate(x: f32) -> f32 { return clamp(x, 0.0, 1.0); }
 fn sat3(v: vec3<f32>) -> vec3<f32> { return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)); }
 
+// Fresnel (Schlick)
 fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
   return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-fn ggx_ndf(NdotH: f32, a: f32) -> f32 {
-  let a2 = a*a;
-  let d = (NdotH*NdotH)*(a2 - 1.0) + 1.0;
-  return a2 / (3.14159265 * d * d);
+// GGX / Trowbridge-Reitz NDF
+fn ggx_ndf(NdotH: f32, alpha: f32) -> f32 {
+  let a2 = alpha * alpha;
+  let d = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
+  return a2 / (PI * d * d);
 }
 
-fn smith_g(NdotV: f32, NdotL: f32, a: f32) -> f32 {
-  // Schlick-GGX geometry
-  let k = (a + 1.0);
-  let k2 = (k*k) / 8.0;
-  let gv = NdotV / (NdotV*(1.0 - k2) + k2);
-  let gl = NdotL / (NdotL*(1.0 - k2) + k2);
+// Smith geometry with Schlick-GGX
+fn smith_g_schlick_ggx(NdotV: f32, NdotL: f32, alpha: f32) -> f32 {
+  // k from UE4 style
+  let k = (alpha + 1.0);
+  let k2 = (k * k) / 8.0;
+
+  let gv = NdotV / (NdotV * (1.0 - k2) + k2);
+  let gl = NdotL / (NdotL * (1.0 - k2) + k2);
   return gv * gl;
+}
+
+// Lambert diffuse (simple, stable)
+fn diffuse_lambert(diffuseColor: vec3<f32>) -> vec3<f32> {
+  return diffuseColor / PI;
 }
 
 fn ray_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
@@ -70,6 +79,9 @@ fn ray_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+  // alias
+  let G = globals;
+
   // screen ray
   let aspect = G.resolution.x / G.resolution.y;
   let p = (in.uv * 2.0 - vec2<f32>(1.0)) * vec2<f32>(aspect, 1.0);
@@ -77,11 +89,10 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let ro = G.cam_pos;
   let rd = normalize(vec3<f32>(p, -1.3));
 
-  // scene: one sphere + ground plane feel (via background)
   let sphere_c = vec3<f32>(0.0, 0.0, 0.0);
   let t = ray_sphere(ro, rd, sphere_c, 0.6);
 
-  // background gradient (helps sell “game lighting”)
+  // background
   var col = mix(
       vec3<f32>(0.10, 0.12, 0.15),
       vec3<f32>(0.02, 0.03, 0.05),
@@ -95,32 +106,63 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     let L = normalize(-G.light_dir);
     let H = normalize(V + L);
 
-    let NdotL = saturate(dot(N, L));
-    let NdotV = saturate(dot(N, V));
-    let NdotH = saturate(dot(N, H));
-    let VdotH = saturate(dot(V, H));
+    let NoL = saturate(dot(N, L));
+    let NoV = saturate(dot(N, V));
+    let NoH = saturate(dot(N, H));
+    let VoH = saturate(dot(V, H));
 
-    // choose a stylized base color (like a hero/AC item)
+    // --- "glTF material" constants for now (later: textures) ---
+    // Base color in linear space (when using textures, decode sRGB -> linear)
     let baseColor = vec3<f32>(0.25, 0.60, 0.95);
 
-    let rim = pow(1.0 - NdotV, 2.0);
-    let rimCol = rim * vec3<f32>(0.20, 0.25, 0.35);
+    // Metallic-roughness workflow
+    let metallic: f32 = 0.05;       // try 0..1
+    let roughness_in: f32 = 0.65;   // try 0..1
 
-    // --- ACNH-ish: soft diffuse + broad spec + warm ambient ---
-    let ambient = vec3<f32>(0.22, 0.24, 0.26);
-    let wrap = 0.35; // diffuse wrap for softness
-    let ndl_wrap = saturate((dot(N, L) + wrap) / (1.0 + wrap));
+    // AO / "flat darkness": 1 = none, 0 = very occluded
+    let ao: f32 = 0.75;
 
-    // gentle, broad highlight
-    let specPow = 96.0;
-    let spec = pow(saturate(dot(reflect(-L, N), V)), specPow) * 0.15;
+    // Avoid singular highlights
+    let roughness = clamp(roughness_in, 0.04, 1.0);
+    let alpha = roughness * roughness;
 
-    col = baseColor * (ambient + ndl_wrap * G.light_color * 0.9) + spec * G.light_color + rimCol * 0.6;
+    // glTF standard mixing:
+    // Dielectric F0 ≈ 0.04, metals use baseColor as F0
+    let F0 = mix(vec3<f32>(0.04), baseColor, metallic);
+    let diffuseColor = baseColor * (1.0 - metallic);
 
-    // subtle “toy-like” tonemap
-    col = col / (col + vec3<f32>(0.7));
-    col = pow(col, vec3<f32>(1.0/1.8)); // a touch of lift
+    // Specular BRDF
+    let D = ggx_ndf(NoH, alpha);
+    let Gg = smith_g_schlick_ggx(NoV, NoL, alpha);
+    let F = fresnel_schlick(VoH, F0);
+
+    let denom = max(4.0 * NoV * NoL, 1e-4);
+    let spec = (D * Gg) * F / denom;
+
+    // Energy conservation (diffuse reduced by Fresnel)
+    let kd = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    let diff = kd * diffuse_lambert(diffuseColor);
+
+    // Direct lighting
+    let direct = (diff + spec) * (G.light_color * NoL);
+
+    // Ambient (fake IBL): AO only affects ambient/indirect
+    // This is the "ACNH-ish darkness" knob.
+    let ambientIntensity = 0.25;
+    let ambient = diffuseColor * ambientIntensity * ao;
+
+    col = direct + ambient;
+
+    // Optional: tiny rim for readability (stylized, but subtle)
+    let rim = pow(1.0 - NoV, 2.0) * 0.08;
+    col += rim * vec3<f32>(0.8, 0.9, 1.0);
+
+    // Simple tonemap + gamma
+    col = col / (col + vec3<f32>(1.0));
+    col = pow(col, vec3<f32>(1.0 / 2.2));
   }
 
   return vec4<f32>(sat3(col), 1.0);
 }
+
+

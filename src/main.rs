@@ -8,6 +8,46 @@ use winit::{
     window::WindowBuilder,
 };
 
+use glam::{Mat4, Vec2, Vec3};
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    pos: [f32; 3],
+    nrm: [f32; 3],
+    uv:  [f32; 2],
+}
+
+impl Vertex {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        use std::mem;
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                // position
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // normal
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 3]>() as u64,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // uv
+                wgpu::VertexAttribute {
+                    offset: (mem::size_of::<[f32; 3]>() + mem::size_of::<[f32; 3]>()) as u64,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, ShaderType)]
 struct Globals {
     // 0..16
@@ -26,6 +66,8 @@ struct Globals {
     // 48..64
     light_color: Vec3,
     _pad2: f32,
+
+    view_proj: Mat4,
 }
 
 struct State {
@@ -35,13 +77,25 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
 
+    depth_tex: wgpu::Texture,
+    depth_texview: wgpu::TextureView,
+
     pipeline: wgpu::RenderPipeline,
     globals: Globals,
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     globals_staging: Vec<u8>,
 
+    test_mesh: Mesh,
+
     start: std::time::Instant,
+}
+
+struct Mesh {
+    let vertices: Vec<Vertex>,
+    let indices: Vec<u16>,
+    let vert_buf: Buffer,
+    let ind_buf: Buffer,
 }
 
 impl State {
@@ -73,7 +127,13 @@ impl State {
             .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let format = surface_caps.formats[0]; // pick first supported
+        // Prefer an sRGB format for correct output
+        let format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -87,16 +147,23 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let globals = Globals {
-            time: 0.0,
-            _pad0: 0.0,
-            _pad3: 0.0,
-            resolution: Vec2::new(config.width as f32, config.height as f32),
-            _pad1: 0.0,
-            cam_pos: Vec3::new(0.0, 0.0, 2.5),
-            _pad2: 0.0,
-            light_dir: Vec3::new(0.4, 0.7, 0.2),
-            light_color: Vec3::new(1.0, 0.98, 0.92),
+        let globals = {
+
+            let view = Mat4::look_at_rh(eye, target, up);
+            let proj = Mat4::perspective_rh_gl(45f32.to_radians(), config.width as f32 / config.height as f32, 0.1, 100.0);
+
+            Globals {
+                time: 0.0,
+                _pad0: 0.0,
+                _pad3: 0.0,
+                resolution: Vec2::new(config.width as f32, config.height as f32),
+                _pad1: 0.0,
+                cam_pos: eye,
+                _pad2: 0.0,
+                light_dir: Vec3::new(0.4, 0.7, 0.2),
+                light_color: Vec3::new(1.0, 0.98, 0.92),
+                view_proj: proj * view;
+            }
         };
 
         println!("Globals size = {}", std::mem::size_of::<Globals>());
@@ -172,6 +239,33 @@ impl State {
 
         let globals_staging = Vec::with_capacity(256);
 
+        let test_mesh = {
+            let vertices: Vec<Vertex> = vec![
+                Vertex { pos: [-0.8, -0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [0.0, 1.0] },
+                Vertex { pos: [ 0.8, -0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [1.0, 1.0] },
+                Vertex { pos: [ 0.8,  0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [1.0, 0.0] },
+                Vertex { pos: [-0.8,  0.8, 0.0], nrm: [0.0, 0.0, 1.0], uv: [0.0, 0.0] },
+            ];
+            let indices: Vec<u16> = vec![0, 1, 2, 0, 2, 3];
+
+            let vert_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vert_buf"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ind_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ind_buf"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
+            Mesh {
+                vert_buf, ind_buf, indices, vertices
+            }
+        };
+
+        let (depth_tex, depth_texview) = create_depth(&device, &config);
+
         Self {
             surface,
             device,
@@ -183,16 +277,38 @@ impl State {
             globals_buf,
             globals_bg,
             globals_staging,
+            test_mesh,
+            depth_tex,
+            depth_texview,
             start: std::time::Instant::now(),
         }
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        let width = new_size.width.max(1);
+        let height = new_size.height.max(1);
+
         self.size = new_size;
-        self.config.width = new_size.width.max(1);
-        self.config.height = new_size.height.max(1);
-        self.globals.resolution = Vec2::new(self.config.width as f32, self.config.height as f32);
+        self.config.width = width;
+        self.config.height = height;
+        self.globals.resolution = Vec2::new(width as f32, height as f32);
         self.surface.configure(&self.device, &self.config);
+
+        self.globals.view_proj = Self::calc_view_proj(width as f32, height as f32);
+
+        let (depth_tex, depth_texview) = create_depth(&self.device, &self.config);
+        self.depth_tex = depth_tex;
+        self.depth_texview = depth_texview;
+    }
+
+    fn calc_view_proj(width: f32, height: f32) -> Mat4 {
+        let eye = Vec3::new(0.0, 0.8, 2.5);
+        let target = Vec3::new(0.0, 0.0, 0.0);
+        let up = Vec3::Y;
+
+        let view = Mat4::look_at_rh(eye, target, up);
+        let proj = Mat4::perspective_rh_gl(45f32.to_radians(), width / height, 0.1, 100.0);
+        proj * view
     }
 
     fn update(&mut self) {
@@ -308,4 +424,20 @@ fn main() {
             }
         })
         .unwrap();
+}
+
+fn create_depth(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 };
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth24Plus,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
 }
