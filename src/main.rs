@@ -96,7 +96,7 @@ fn make_global_gpudata(
         resolution: Vec2::new(width, height),
         cam_pos: eye,
         _pad3: 0.0,
-        light_dir: Vec3::new(0.4, 0.7, 0.5),
+        light_dir: Vec3::new(0.8, 0.8, 0.8),
         _pad1: 0.0,
         light_color: Vec3::new(1.0, 0.98, 0.92),
         _pad2: 0.0,
@@ -416,8 +416,8 @@ impl State {
     fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
-        let t = self.globals_mut().time * 0.3;
-        self.globals_mut().light_dir = Vec3::new(t.cos() * 0.6, 0.7, t.sin() * 0.6);
+        let t = self.globals_mut().time * 0.1;
+        //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);
 
         // Example: slowly rotate the test mesh so you can verify transforms
         let model = Mat4::from_rotation_y(self.globals.data.time * 0.6);
