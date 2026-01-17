@@ -432,7 +432,7 @@ impl Renderbud {
 
             rpass.set_pipeline(&self.pipeline);
             rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
-            rpass.set_bind_group(1, &self.object.bindgroup, &[]); // <-- add this
+            rpass.set_bind_group(1, &self.object.bindgroup, &[]);
 
             if let Some(model) = self.model.as_ref() {
                 for d in &model.draws {
