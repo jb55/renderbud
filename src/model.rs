@@ -187,11 +187,6 @@ fn build_rgba(img: &gltf::image::Data) -> Vec<u8> {
     }
 }
 
-/// Model errors
-enum Error {
-    LoadFailed(String),
-}
-
 pub fn load_gltf_model(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -231,15 +226,6 @@ pub fn load_gltf_model(
         wgpu::TextureFormat::Rgba8Unorm,
         "normal_1x1",
     );
-    let default_ao = upload_rgba8_texture_2d(
-        device,
-        queue,
-        1,
-        1,
-        &[255, 255, 255, 255],
-        wgpu::TextureFormat::Rgba8Unorm,
-        "ao_1x1",
-    );
 
     let mut cache = GltfWgpuCache::new(&doc);
 
@@ -278,14 +264,6 @@ pub fn load_gltf_model(
             cache.ensure_texture_view(&images, device, queue, norm_tex.texture(), false)
         });
 
-        let ao_key = mat.occlusion_texture().map(|tex| {
-            let s_idx = cache.ensure_sampler(device, tex.texture().sampler());
-            if chosen_sampler_idx.is_none() {
-                chosen_sampler_idx = s_idx;
-            }
-            cache.ensure_texture_view(&images, device, queue, tex.texture(), false)
-        });
-
         let uniform = MaterialUniform {
             base_color_factor: Vec4::new(bc_factor[0], bc_factor[1], bc_factor[2], bc_factor[3]),
             metallic_factor,
@@ -308,8 +286,6 @@ pub fn load_gltf_model(
 
         let mr_view: &wgpu::TextureView = mr_key.map(|k| cache.view_ref(k)).unwrap_or(&default_mr);
 
-        let ao_view: &wgpu::TextureView = ao_key.map(|k| cache.view_ref(k)).unwrap_or(&default_ao);
-
         materials.push(make_material_gpu(
             device,
             queue,
@@ -318,7 +294,6 @@ pub fn load_gltf_model(
             basecolor_view,
             mr_view,
             normal_view,
-            ao_view,
             uniform,
         ));
     }
@@ -332,7 +307,6 @@ pub fn load_gltf_model(
         &default_basecolor,
         &default_mr,
         &default_normal,
-        &default_ao,
         MaterialUniform {
             base_color_factor: Vec4::ONE,
             metallic_factor: 0.0,
@@ -380,14 +354,6 @@ pub fn load_gltf_model(
                 .map(|it| it.collect())
                 .unwrap_or_else(|| vec![[1.0, 0.0, 0.0, 1.0]; positions.len()]);
                 */
-
-            let has_tangents = reader.read_tangents().is_some();
-            println!(
-                "mesh {} prim {} has_tangents={}",
-                mesh.index(),
-                prim.index(),
-                has_tangents
-            );
 
             let mut verts: Vec<Vertex> = Vec::with_capacity(positions.len());
             for i in 0..positions.len() {
@@ -494,7 +460,6 @@ fn make_material_gpu(
     basecolor: &wgpu::TextureView,
     mr: &wgpu::TextureView,
     normal: &wgpu::TextureView,
-    ao: &wgpu::TextureView,
     uniform: MaterialUniform,
 ) -> MaterialGpu {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -533,10 +498,6 @@ fn make_material_gpu(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(normal),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(ao),
             },
         ],
     });
@@ -611,9 +572,5 @@ fn compute_tangents(verts: &mut [Vertex], indices: &[u16]) {
         };
 
         verts[i].tangent = [t_ortho.x, t_ortho.y, t_ortho.z, w];
-        println!(
-            "{} {} {} {}",
-            verts[i].tangent[0], verts[i].tangent[1], verts[i].tangent[2], verts[i].tangent[3]
-        );
     }
 }

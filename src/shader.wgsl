@@ -39,9 +39,8 @@ struct Material {
 @group(2) @binding(0) var<uniform> material: Material;
 @group(2) @binding(1) var material_sampler: sampler;
 @group(2) @binding(2) var basecolor_tex: texture_2d<f32>;
-@group(2) @binding(3) var mr_tex: texture_2d<f32>;
+@group(2) @binding(3) var ao_mr_tex: texture_2d<f32>;
 @group(2) @binding(4) var normal_tex: texture_2d<f32>;
-@group(2) @binding(5) var ao_tex: texture_2d<f32>;
 
 struct VSIn {
   @location(0) pos: vec3<f32>,
@@ -156,16 +155,15 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   let m = material;
   let bc_tex = textureSample(basecolor_tex, material_sampler, in.uv);
-  let mr = textureSample(mr_tex, material_sampler, in.uv);
-  let ao_s = textureSample(ao_tex, material_sampler, in.uv);
+  let ao_mr = textureSample(ao_mr_tex, material_sampler, in.uv);
 
   // glTF: metallicRoughnessTexture: G=roughness, B=metallic
   let baseColor = bc_tex.rgb * m.base_color_factor.rgb;
-  let metallic: f32 = saturate(mr.b * m.metallic_factor);
-  let roughness_in: f32 = mr.g * m.roughness_factor;
+  let metallic: f32 = saturate(ao_mr.b * m.metallic_factor);
+  let roughness_in: f32 = ao_mr.g * m.roughness_factor;
 
   // AO: R channel; strength as art-directable lerp from 1 -> ao
-  let ao_tex_v: f32 = ao_s.r;
+  let ao_tex_v: f32 = ao_mr.r;
   let ao: f32 = 1.0 + (ao_tex_v - 1.0) * saturate(m.ao_strength);
 
   let roughness = clamp(roughness_in, 0.04, 1.0);
@@ -186,7 +184,7 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   let direct = (diff + spec) * (G.light_color * NoL);
 
-  let ambientIntensity = 0.1;
+  let ambientIntensity = 0.2;
   let ambient = diffuseColor * ambientIntensity * ao;
 
   var col = direct + ambient;
@@ -198,12 +196,17 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   col = col / (col + vec3<f32>(1.0));
   col = pow(col, vec3<f32>(1.0 / 2.2));
 
+  return vec4<f32>(sat3(col), 1.0);
+
+  // AO DEBUG
+  //return vec4(vec3<f32>(ao_mr.r), 1.0);
+
   //let texN = textureSample(normal_tex, material_sampler, in.uv).xyz;
   //return vec4<f32>(texN, 1.0);
-  return vec4<f32>(sat3(col), 1.0);
+
   //return vec4<f32>(normalize(in.world_normal) * 0.5 + 0.5, 1.0);
-  //return vec4<f32>(N * 0.5 + 0.5, 1.0);
-  //return vec4<f32>(normalize(in.world_tangent.xyz) * 0.5 + 0.5, 1.0); 
+
+  // TANGENT DEBUG
   //return vec4<f32>(vec3<f32>(n_ts.z), 1.0);
 }
 

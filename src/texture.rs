@@ -86,9 +86,6 @@ pub fn upload_rgba8_texture_2d(
     let bytes_per_pixel = 4usize;
     let unpadded_bytes_per_row = width as usize * bytes_per_pixel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize; // 256
-    println!(
-        "width({width}) bytes_per_pixel({bytes_per_pixel}) unpadded_bytes_per_row({unpadded_bytes_per_row}) align({align})"
-    );
 
     // CEIL division to next multiple of 256
     let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
@@ -96,7 +93,6 @@ pub fn upload_rgba8_texture_2d(
     assert!(padded_bytes_per_row >= unpadded_bytes_per_row);
     assert!(padded_bytes_per_row % align == 0);
 
-    println!("padded_bytes_per_row({padded_bytes_per_row}) * height({height})");
     let mut padded = vec![0u8; padded_bytes_per_row * height as usize];
     for y in 0..height as usize {
         let src = &rgba[y * unpadded_bytes_per_row..(y + 1) * unpadded_bytes_per_row];

@@ -73,14 +73,6 @@ pub fn make_material_gpudata(
         "normal_1x1",
     );
 
-    let ao_view = make_1x1_rgba8(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [255, 255, 255, 255], // R=1
-        "ao_1x1",
-    );
-
     let material_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("material_bgl"),
         entries: &[
@@ -108,8 +100,6 @@ pub fn make_material_gpudata(
             texture_layout_entry(3),
             // normal (linear)
             texture_layout_entry(4),
-            // AO (linear)
-            texture_layout_entry(5),
         ],
     });
 
@@ -136,10 +126,6 @@ pub fn make_material_gpudata(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::TextureView(&normal_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(&ao_view),
             },
         ],
     });

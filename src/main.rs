@@ -88,7 +88,7 @@ fn make_global_gpudata(
     width: f32,
     height: f32,
 ) -> (GpuData<Globals>, wgpu::BindGroupLayout) {
-    let eye = Vec3::new(0.0, 12.2, 32.0);
+    let eye = Vec3::new(0.0, 16.0, 24.0);
     let view_proj = calc_view_proj(eye, width, height);
     let globals = Globals {
         time: 0.0,
@@ -96,7 +96,7 @@ fn make_global_gpudata(
         resolution: Vec2::new(width, height),
         cam_pos: eye,
         _pad3: 0.0,
-        light_dir: Vec3::new(0.4, 0.7, 0.2),
+        light_dir: Vec3::new(0.4, 0.7, 0.5),
         _pad1: 0.0,
         light_color: Vec3::new(1.0, 0.98, 0.92),
         _pad2: 0.0,
@@ -193,6 +193,31 @@ fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::
     )
 }
 
+async fn _check_adapters(instance: &wgpu::Instance) {
+    // What adapters exist at all?
+    for (i, a) in instance
+        .enumerate_adapters(wgpu::Backends::all())
+        .into_iter()
+        .enumerate()
+    {
+        let info = a.get_info();
+        eprintln!(
+            "Adapter #{i}: {:?} {} {} (backend: {:?})",
+            info.device_type, info.vendor, info.name, info.backend
+        );
+    }
+
+    // Ask without a surface constraint (diagnostic)
+    let any_adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: None,
+            ..Default::default()
+        })
+        .await;
+
+    eprintln!("adapter without surface? {}", any_adapter.is_some());
+}
+
 impl State {
     async fn new(window: winit::window::Window) -> Self {
         let size = window.inner_size();
@@ -200,11 +225,14 @@ impl State {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window).unwrap();
 
+        //check_adapters(&instance).await;
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                //power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -418,9 +446,9 @@ impl State {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.05,
-                            g: 0.06,
-                            b: 0.07,
+                            r: 0.00,
+                            g: 0.00,
+                            b: 0.00,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
