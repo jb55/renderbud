@@ -1,6 +1,6 @@
 // Cargo.toml deps (recent-ish):
 
-use encase::ShaderType;
+use encase::{ShaderType, internal::WriteInto};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -49,6 +49,21 @@ impl Vertex {
 }
 
 #[derive(Debug, Copy, Clone, ShaderType)]
+struct ObjectUniform {
+    model: Mat4,
+    normal: Mat4, // inverse-transpose(model)
+}
+
+impl ObjectUniform {
+    fn from_model(model: Mat4) -> Self {
+        Self {
+            model,
+            normal: model.inverse().transpose(),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, ShaderType)]
 struct Globals {
     // 0..16
     time: f32,
@@ -70,6 +85,13 @@ struct Globals {
     view_proj: Mat4,
 }
 
+struct GpuData<R> {
+    data: R,
+    buffer: wgpu::Buffer,
+    bindgroup: wgpu::BindGroup,
+    staging: Vec<u8>,
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -81,10 +103,9 @@ struct State {
     depth_view: wgpu::TextureView,
 
     pipeline: wgpu::RenderPipeline,
-    globals: Globals,
-    globals_buf: wgpu::Buffer,
-    globals_bg: wgpu::BindGroup,
-    globals_staging: Vec<u8>,
+
+    globals: GpuData<Globals>,
+    object: GpuData<ObjectUniform>,
 
     test_mesh: Mesh,
 
@@ -194,6 +215,39 @@ impl State {
             }],
         });
 
+        let object_uniform = ObjectUniform::from_model(Mat4::IDENTITY);
+        let object_ubo_size = ObjectUniform::min_size().get() as u64;
+
+        let object_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("object"),
+            size: object_ubo_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let object_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("object_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let object_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("object_bg"),
+            layout: &object_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: object_buf.as_entire_binding(),
+            }],
+        });
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -201,7 +255,7 @@ impl State {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
-            bind_group_layouts: &[&globals_bgl],
+            bind_group_layouts: &[&globals_bgl, &object_bgl],
             push_constant_ranges: &[],
         });
 
@@ -237,7 +291,19 @@ impl State {
             multiview: None,
         });
 
-        let globals_staging = Vec::with_capacity(256);
+        let globals = GpuData::<Globals> {
+            data: globals,
+            staging: Vec::with_capacity(256),
+            buffer: globals_buf,
+            bindgroup: globals_bg,
+        };
+
+        let object = GpuData::<ObjectUniform> {
+            data: object_uniform,
+            staging: Vec::with_capacity(128),
+            buffer: object_buf,
+            bindgroup: object_bg,
+        };
 
         let test_mesh = {
             let vertices: Vec<Vertex> = vec![
@@ -293,14 +359,16 @@ impl State {
             size,
             pipeline,
             globals,
-            globals_buf,
-            globals_bg,
-            globals_staging,
+            object,
             test_mesh,
             depth_tex,
             depth_view,
             start: std::time::Instant::now(),
         }
+    }
+
+    fn globals_mut(&mut self) -> &mut Globals {
+        &mut self.globals.data
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -310,11 +378,11 @@ impl State {
         self.size = new_size;
         self.config.width = width;
         self.config.height = height;
-        self.globals.resolution = Vec2::new(width as f32, height as f32);
+        self.globals_mut().resolution = Vec2::new(width as f32, height as f32);
         self.surface.configure(&self.device, &self.config);
 
-        self.globals.view_proj =
-            Self::calc_view_proj(self.globals.cam_pos, width as f32, height as f32);
+        self.globals_mut().view_proj =
+            Self::calc_view_proj(self.globals_mut().cam_pos, width as f32, height as f32);
 
         let (depth_tex, depth_view) = create_depth(&self.device, &self.config);
         self.depth_tex = depth_tex;
@@ -331,16 +399,17 @@ impl State {
     }
 
     fn update(&mut self) {
-        self.globals.time = self.start.elapsed().as_secs_f32();
-        // animate light a bit
-        let t = self.globals.time * 0.3;
-        self.globals.light_dir = Vec3::new(t.cos() * 0.6, 0.7, t.sin() * 0.6);
-        write_globals(
-            &self.queue,
-            &self.globals_buf,
-            &mut self.globals_staging,
-            &self.globals,
-        );
+        self.globals_mut().time = self.start.elapsed().as_secs_f32();
+
+        let t = self.globals_mut().time * 0.3;
+        self.globals_mut().light_dir = Vec3::new(t.cos() * 0.6, 0.7, t.sin() * 0.6);
+
+        // Example: slowly rotate the test mesh so you can verify transforms
+        let model = Mat4::from_rotation_y(self.globals.data.time * 0.6);
+        self.object.data = ObjectUniform::from_model(model);
+
+        write_gpu_data(&self.queue, &mut self.globals);
+        write_gpu_data(&self.queue, &mut self.object);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -382,7 +451,8 @@ impl State {
             });
 
             rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, &self.globals_bg, &[]);
+            rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
+            rpass.set_bind_group(1, &self.object.bindgroup, &[]);
             rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
             rpass.set_index_buffer(self.test_mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
             rpass.draw_indexed(0..self.test_mesh.num_indices, 0, 0..1);
@@ -394,16 +464,11 @@ impl State {
     }
 }
 
-fn write_globals(
-    queue: &wgpu::Queue,
-    buf: &wgpu::Buffer,
-    staging: &mut Vec<u8>,
-    globals: &Globals,
-) {
-    staging.clear();
-    let mut storage = encase::UniformBuffer::new(staging);
-    storage.write(globals).unwrap();
-    queue.write_buffer(buf, 0, storage.as_ref());
+fn write_gpu_data<R: ShaderType + WriteInto>(queue: &wgpu::Queue, state: &mut GpuData<R>) {
+    state.staging.clear();
+    let mut storage = encase::UniformBuffer::new(&mut state.staging);
+    storage.write(&state.data).unwrap();
+    queue.write_buffer(&state.buffer, 0, storage.as_ref());
 }
 
 fn main() {

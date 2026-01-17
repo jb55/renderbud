@@ -20,16 +20,24 @@ struct Globals {
 @group(0) @binding(0)
 var<uniform> globals: Globals;
 
+struct Object {
+  model: mat4x4<f32>,
+  normal: mat4x4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> object: Object;
+
 struct VSIn {
   @location(0) pos: vec3<f32>,
-  @location(1) nrm: vec3<f32>,
+  @location(1) normal: vec3<f32>,
   @location(2) uv:  vec2<f32>,
 };
 
 struct VSOut {
   @builtin(position) clip: vec4<f32>,
   @location(0) world_pos: vec3<f32>,
-  @location(1) world_nrm: vec3<f32>,
+  @location(1) world_normal: vec3<f32>,
   @location(2) uv: vec2<f32>,
 };
 
@@ -38,12 +46,15 @@ fn vs_main(v: VSIn) -> VSOut {
   var out: VSOut;
 
   // For now: identity model matrix. Next step is per-object transforms.
-  let world = vec4<f32>(v.pos, 1.0);
-  out.world_pos = world.xyz;
-  out.world_nrm = normalize(v.nrm);
-  out.uv = v.uv;
+  let world4 = object.model * vec4<f32>(v.pos, 1.0);
+  out.world_pos = world4.xyz;
 
-  out.clip = globals.view_proj * world;
+  let n4 = object.normal * vec4<f32>(v.normal, 0.0);
+
+  out.world_normal = normalize(n4.xyz);
+  out.uv = v.uv;
+  out.clip = globals.view_proj * world4;
+
   return out;
 }
 
@@ -91,7 +102,7 @@ fn ray_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let G = globals;
 
-  let N = normalize(in.world_nrm);
+  let N = normalize(in.world_normal);
   let V = normalize(G.cam_pos - in.world_pos);
   let L = normalize(-G.light_dir);
   let H = normalize(V + L);
