@@ -7,55 +7,16 @@ use winit::{
     window::WindowBuilder,
 };
 
-use glam::{Mat4, Vec2, Vec3, Vec4};
-use wgpu::util::DeviceExt;
+use glam::{Mat4, Vec2, Vec3};
 
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    pos: [f32; 3],
-    nrm: [f32; 3],
-    uv: [f32; 2],
-}
+use crate::material::{MaterialUniform, make_material_gpudata};
+use crate::model::Model;
+use crate::model::Vertex;
+use crate::model::load_gltf_model;
 
-impl Vertex {
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                // position
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // normal
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 3]>() as u64,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // uv
-                wgpu::VertexAttribute {
-                    offset: (mem::size_of::<[f32; 3]>() + mem::size_of::<[f32; 3]>()) as u64,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, ShaderType)]
-struct MaterialUniform {
-    base_color_factor: glam::Vec4, // rgba
-    metallic_factor: f32,
-    roughness_factor: f32,
-    ao_strength: f32,
-    _pad0: f32,
-}
+mod material;
+mod model;
+mod texture;
 
 #[derive(Debug, Copy, Clone, ShaderType)]
 struct ObjectUniform {
@@ -115,60 +76,11 @@ struct State {
 
     globals: GpuData<Globals>,
     object: GpuData<ObjectUniform>,
-
     material: GpuData<MaterialUniform>,
 
-    test_mesh: Mesh,
+    model: Model,
 
     start: std::time::Instant,
-}
-
-fn make_1x1_rgba8(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    format: wgpu::TextureFormat,
-    rgba: [u8; 4],
-    label: &str,
-) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
-        width: 1,
-        height: 1,
-        depth_or_array_layers: 1,
-    };
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: extent.clone(),
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    queue.write_texture(
-        wgpu::ImageCopyTexture {
-            texture: &tex,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &rgba,
-        wgpu::ImageDataLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-
-    tex.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-struct Mesh {
-    num_indices: u32,
-    vert_buf: wgpu::Buffer,
-    ind_buf: wgpu::Buffer,
 }
 
 fn make_global_gpudata(
@@ -176,7 +88,7 @@ fn make_global_gpudata(
     width: f32,
     height: f32,
 ) -> (GpuData<Globals>, wgpu::BindGroupLayout) {
-    let eye = Vec3::new(0.0, 0.8, 2.5);
+    let eye = Vec3::new(0.0, 12.2, 32.0);
     let view_proj = calc_view_proj(eye, width, height);
     let globals = Globals {
         time: 0.0,
@@ -234,156 +146,6 @@ fn make_global_gpudata(
         },
         globals_bgl,
     )
-}
-
-fn make_material_gpudata(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (GpuData<MaterialUniform>, wgpu::BindGroupLayout) {
-    let material_uniform = MaterialUniform {
-        base_color_factor: Vec4::new(1.0, 0.1, 0.1, 1.0),
-        metallic_factor: 1.0,
-        roughness_factor: 0.1,
-        ao_strength: 1.0,
-        _pad0: 0.0,
-    };
-
-    let material_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("material"),
-        size: MaterialUniform::min_size().get() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("material_sampler"),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        address_mode_w: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    });
-
-    // Default textures
-    let basecolor_view = make_1x1_rgba8(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        [255, 255, 255, 255],
-        "basecolor_1x1",
-    );
-
-    let mr_view = make_1x1_rgba8(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [0, 255, 0, 255], // G=roughness=1, B=metallic=0 (A unused)
-        "mr_1x1",
-    );
-
-    let normal_view = make_1x1_rgba8(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [128, 128, 255, 255],
-        "normal_1x1",
-    );
-
-    let ao_view = make_1x1_rgba8(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        [255, 255, 255, 255], // R=1
-        "ao_1x1",
-    );
-
-    let material_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("material_bgl"),
-        entries: &[
-            // uniform
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // sampler
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            // baseColor (sRGB)
-            texture_layout_entry(2),
-            // metallicRougness (linear)
-            texture_layout_entry(3),
-            // normal (linear)
-            texture_layout_entry(4),
-            // AO (linear)
-            texture_layout_entry(5),
-        ],
-    });
-
-    let material_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("material_bg"),
-        layout: &material_bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: material_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&material_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&basecolor_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&mr_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::TextureView(&normal_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(&ao_view),
-            },
-        ],
-    });
-
-    (
-        GpuData::<MaterialUniform> {
-            data: material_uniform,
-            staging: Vec::with_capacity(128),
-            buffer: material_buf,
-            bindgroup: material_bg,
-        },
-        material_bgl,
-    )
-}
-
-fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-        },
-        count: None,
-    }
 }
 
 fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::BindGroupLayout) {
@@ -528,26 +290,27 @@ impl State {
             multiview: None,
         });
 
+        /*
         let test_mesh = {
             let vertices: Vec<Vertex> = vec![
                 Vertex {
                     pos: [-0.8, -0.8, 0.0],
-                    nrm: [0.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
                     uv: [0.0, 1.0],
                 },
                 Vertex {
                     pos: [0.8, -0.8, 0.0],
-                    nrm: [0.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
                     uv: [1.0, 1.0],
                 },
                 Vertex {
                     pos: [0.8, 0.8, 0.0],
-                    nrm: [0.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
                     uv: [1.0, 0.0],
                 },
                 Vertex {
                     pos: [-0.8, 0.8, 0.0],
-                    nrm: [0.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
                     uv: [0.0, 0.0],
                 },
             ];
@@ -571,8 +334,17 @@ impl State {
                 num_indices,
             }
         };
+        */
 
         let (depth_tex, depth_view) = create_depth(&device, &config);
+
+        let model = load_gltf_model(
+            &device,
+            &queue,
+            &material_bgl,
+            "/home/jb55/var/models/ironwood/ironwood.glb",
+        )
+        .unwrap();
 
         Self {
             surface,
@@ -584,7 +356,7 @@ impl State {
             globals,
             object,
             material,
-            test_mesh,
+            model,
             depth_tex,
             depth_view,
             start: std::time::Instant::now(),
@@ -668,11 +440,18 @@ impl State {
 
             rpass.set_pipeline(&self.pipeline);
             rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
-            rpass.set_bind_group(1, &self.object.bindgroup, &[]);
-            rpass.set_bind_group(2, &self.material.bindgroup, &[]);
-            rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
-            rpass.set_index_buffer(self.test_mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..self.test_mesh.num_indices, 0, 0..1);
+            rpass.set_bind_group(1, &self.object.bindgroup, &[]); // <-- add this
+
+            for d in &self.model.draws {
+                rpass.set_bind_group(2, &self.model.materials[d.material_index].bindgroup, &[]);
+                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+            }
+
+            //rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
+            //rpass.set_index_buffer(self.test_mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+            //rpass.draw_indexed(0..self.test_mesh.num_indices, 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -763,6 +542,6 @@ pub fn calc_view_proj(eye: Vec3, width: f32, height: f32) -> Mat4 {
     let up = Vec3::Y;
 
     let view = Mat4::look_at_rh(eye, target, up);
-    let proj = Mat4::perspective_rh_gl(45f32.to_radians(), width / height, 0.1, 100.0);
+    let proj = Mat4::perspective_rh(45f32.to_radians(), width / height, 0.1, 100.0);
     proj * view
 }

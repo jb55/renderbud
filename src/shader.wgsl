@@ -47,6 +47,7 @@ struct VSIn {
   @location(0) pos: vec3<f32>,
   @location(1) normal: vec3<f32>,
   @location(2) uv:  vec2<f32>,
+  @location(3) tangent: vec4<f32>,
 };
 
 struct VSOut {
@@ -54,6 +55,7 @@ struct VSOut {
   @location(0) world_pos: vec3<f32>,
   @location(1) world_normal: vec3<f32>,
   @location(2) uv: vec2<f32>,
+  @location(3) world_tangent: vec4<f32>, // xyz + w
 };
 
 @vertex
@@ -65,10 +67,12 @@ fn vs_main(v: VSIn) -> VSOut {
   out.world_pos = world4.xyz;
 
   let n4 = object.normal * vec4<f32>(v.normal, 0.0);
+  let t4 = object.model * vec4<f32>(v.tangent.xyz, 0.0);
 
   out.world_normal = normalize(n4.xyz);
   out.uv = v.uv;
   out.clip = globals.view_proj * world4;
+  out.world_tangent = vec4<f32>(normalize(t4.xyz), v.tangent.w);
 
   return out;
 }
@@ -113,11 +117,34 @@ fn ray_sphere(ro: vec3<f32>, rd: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
   return -b - sqrt(h);
 }
 
+fn decode_normal(n: vec3<f32>) -> vec3<f32> {
+  return normalize(n * 2.0 - vec3<f32>(1.0));
+}
+
+fn decode_normal_rg(tex: vec3<f32>) -> vec3<f32> {
+  let x = tex.r * 2.0 - 1.0;
+  let y = tex.g * 2.0 - 1.0;
+  let z2 = max(1.0 - x*x - y*y, 0.0);
+  let z = sqrt(z2);
+  return normalize(vec3<f32>(x, y, z));
+}
+
 @fragment
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let G = globals;
 
-  let N = normalize(in.world_normal);
+  let Ng = normalize(in.world_normal);
+  
+  var T = normalize(in.world_tangent.xyz);
+  T = normalize(T - Ng * dot(Ng, T));
+  let B = normalize(cross(Ng, T)) * in.world_tangent.w;
+  
+  var n_ts = decode_normal_rg(textureSample(normal_tex, material_sampler, in.uv).xyz);
+  //n_ts = normalize(vec3<f32>(n_ts.xy * 0.5, n_ts.z));
+  n_ts.y = -n_ts.y;
+
+  let N = normalize(T * n_ts.x + B * n_ts.y + Ng * n_ts.z);
+
   let V = normalize(G.cam_pos - in.world_pos);
   let L = normalize(-G.light_dir);
   let H = normalize(V + L);
@@ -159,18 +186,25 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   let direct = (diff + spec) * (G.light_color * NoL);
 
-  let ambientIntensity = 0.25;
+  let ambientIntensity = 0.1;
   let ambient = diffuseColor * ambientIntensity * ao;
 
   var col = direct + ambient;
 
-  let rim = pow(1.0 - NoV, 2.0) * 0.08;
+  //let rim = pow(1.0 - NoV, 2.0) * 0.08;
+  let rim = 0.0;
   col += rim * vec3<f32>(0.8, 0.9, 1.0);
 
   col = col / (col + vec3<f32>(1.0));
   col = pow(col, vec3<f32>(1.0 / 2.2));
 
+  //let texN = textureSample(normal_tex, material_sampler, in.uv).xyz;
+  //return vec4<f32>(texN, 1.0);
   return vec4<f32>(sat3(col), 1.0);
+  //return vec4<f32>(normalize(in.world_normal) * 0.5 + 0.5, 1.0);
+  //return vec4<f32>(N * 0.5 + 0.5, 1.0);
+  //return vec4<f32>(normalize(in.world_tangent.xyz) * 0.5 + 0.5, 1.0); 
+  //return vec4<f32>(vec3<f32>(n_ts.z), 1.0);
 }
 
 

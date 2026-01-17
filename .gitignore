@@ -2,3 +2,4 @@ target/
 .buildcmd
 build.log
 .direnv/
+rusty-tags.vi
