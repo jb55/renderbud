@@ -6,7 +6,6 @@ use winit::{
     window::WindowBuilder,
 };
 
-
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -55,4 +54,3 @@ fn main() {
         })
         .unwrap();
 }
-
