@@ -13,7 +13,9 @@ fn main() {
     let mut renderbud = pollster::block_on(renderbud::Renderbud::new(window));
 
     // pick a path relative to crate root
-    let model_path = std::path::Path::new("examples/assets/ironwood.glb");
+
+    let model_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
     let model = renderbud.load_gltf_model(model_path).unwrap();
     renderbud.set_model(model);
 
