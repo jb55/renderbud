@@ -28,6 +28,21 @@ struct Object {
 @group(1) @binding(0)
 var<uniform> object: Object;
 
+struct Material {
+  base_color_factor: vec4<f32>,
+  metallic_factor: f32,
+  roughness_factor: f32,
+  ao_strength: f32,
+  _pad0: f32,
+};
+
+@group(2) @binding(0) var<uniform> material: Material;
+@group(2) @binding(1) var material_sampler: sampler;
+@group(2) @binding(2) var basecolor_tex: texture_2d<f32>;
+@group(2) @binding(3) var mr_tex: texture_2d<f32>;
+@group(2) @binding(4) var normal_tex: texture_2d<f32>;
+@group(2) @binding(5) var ao_tex: texture_2d<f32>;
+
 struct VSIn {
   @location(0) pos: vec3<f32>,
   @location(1) normal: vec3<f32>,
@@ -112,11 +127,19 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let NoH = saturate(dot(N, H));
   let VoH = saturate(dot(V, H));
 
-  // TEMP material constants (textures later)
-  let baseColor = vec3<f32>(0.25, 0.60, 0.95);
-  let metallic: f32 = 0.05;
-  let roughness_in: f32 = 0.65;
-  let ao: f32 = 0.75;
+  let m = material;
+  let bc_tex = textureSample(basecolor_tex, material_sampler, in.uv);
+  let mr = textureSample(mr_tex, material_sampler, in.uv);
+  let ao_s = textureSample(ao_tex, material_sampler, in.uv);
+
+  // glTF: metallicRoughnessTexture: G=roughness, B=metallic
+  let baseColor = bc_tex.rgb * m.base_color_factor.rgb;
+  let metallic: f32 = saturate(mr.b * m.metallic_factor);
+  let roughness_in: f32 = mr.g * m.roughness_factor;
+
+  // AO: R channel; strength as art-directable lerp from 1 -> ao
+  let ao_tex_v: f32 = ao_s.r;
+  let ao: f32 = 1.0 + (ao_tex_v - 1.0) * saturate(m.ao_strength);
 
   let roughness = clamp(roughness_in, 0.04, 1.0);
   let alpha = roughness * roughness;
