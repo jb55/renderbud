@@ -91,4 +91,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.run_app(&mut app)?;
     Ok(())
 }
-
