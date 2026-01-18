@@ -1,58 +1,93 @@
-// Cargo.toml deps (recent-ish):
-
 use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    application::ApplicationHandler,
+    event::{ElementState, KeyEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowAttributes, WindowId},
 };
 
-fn main() {
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+struct App {
+    renderbud: Option<renderbud::Renderbud>,
+}
 
-    let mut renderbud = pollster::block_on(renderbud::Renderbud::new(window));
+impl Default for App {
+    fn default() -> Self {
+        Self { renderbud: None }
+    }
+}
 
-    // pick a path relative to crate root
+impl ApplicationHandler for App {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        // Create the window *after* the event loop is running (winit 0.30+).
+        let window: Window = el
+            .create_window(WindowAttributes::default())
+            .expect("create_window failed");
 
-    let model_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
-    let model = renderbud.load_gltf_model(model_path).unwrap();
-    renderbud.set_model(model);
+        let mut renderbud = pollster::block_on(renderbud::Renderbud::new(window));
 
-    event_loop
-        .run(move |event, elwt| {
-            elwt.set_control_flow(ControlFlow::Poll);
+        // pick a path relative to crate root
+        let model_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
+        let model = renderbud.load_gltf_model(model_path).unwrap();
+        renderbud.set_model(model);
 
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(sz) => renderbud.resize((sz.width, sz.height)),
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if let KeyEvent {
-                            physical_key: winit::keyboard::PhysicalKey::Code(code),
-                            state: ElementState::Pressed,
-                            ..
-                        } = event
-                        {
-                            match code {
-                                winit::keyboard::KeyCode::Space => {}
-                                _ => {}
-                            }
+        self.renderbud = Some(renderbud);
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let Some(renderbud) = self.renderbud.as_mut() else {
+            return;
+        };
+
+        match event {
+            WindowEvent::CloseRequested => el.exit(),
+
+            WindowEvent::Resized(sz) => renderbud.resize((sz.width, sz.height)),
+
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let KeyEvent {
+                    physical_key: PhysicalKey::Code(code),
+                    state: ElementState::Pressed,
+                    ..
+                } = event
+                {
+                    match code {
+                        KeyCode::Space => {
+                            // do something
                         }
-                    }
-                    _ => {}
-                },
-                Event::AboutToWait => {
-                    renderbud.update();
-                    match renderbud.render() {
-                        Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => renderbud.resize(renderbud.size()),
-                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                        Err(_) => {}
+                        _ => {}
                     }
                 }
-                _ => {}
             }
-        })
-        .unwrap();
+
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let Some(renderbud) = self.renderbud.as_mut() else {
+            return;
+        };
+
+        // Continuous rendering.
+        renderbud.update();
+        match renderbud.render() {
+            Ok(_) => {}
+            Err(wgpu::SurfaceError::Lost) => renderbud.resize(renderbud.size()),
+            Err(wgpu::SurfaceError::OutOfMemory) => el.exit(),
+            Err(_) => {}
+        }
+    }
 }
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let event_loop = EventLoop::new()?;
+
+    // Equivalent to your `elwt.set_control_flow(ControlFlow::Poll);`
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    let mut app = App::default();
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+

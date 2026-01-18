@@ -238,6 +238,7 @@ impl Renderbud {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
                 },
@@ -349,17 +350,30 @@ impl Renderer {
             push_constant_ranges: &[],
         });
 
+        /*
+        let pipeline_cache = unsafe {
+            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                label: Some("pipeline_cache"),
+                data: None,
+                fallback: true,
+            })
+        };
+        */
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("pipeline"),
+            //cache: Some(&pipeline_cache),
+            cache: None,
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
                 buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::REPLACE),

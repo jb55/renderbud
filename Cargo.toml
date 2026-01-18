@@ -4,11 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-winit = "0.29"
-wgpu = "0.19"
-pollster = "0.3"
+#winit = { workspace = true }
+#wgpu = { workspace = true }
+#image = { workspace = true }
+#bytemuck = { workspace = true }
+
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+winit = "0.30"
+wgpu = "24"
+bytemuck = { version = "1.14", features = ["derive"] }
+
 glam = "0.30.10"
 gltf = "1.4"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 encase = { version = "0.11.1", features = ["glam"] }
-bytemuck = { version = "1.14", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.4.0"
