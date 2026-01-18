@@ -71,6 +71,7 @@ impl ApplicationHandler for App {
 
         // Continuous rendering.
         renderbud.update();
+        renderbud.prepare();
         match renderbud.render() {
             Ok(_) => {}
             Err(wgpu::SurfaceError::Lost) => renderbud.resize(renderbud.size()),

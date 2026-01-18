@@ -3,13 +3,13 @@ use glam::{Mat4, Vec2, Vec3};
 use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::Model;
 use crate::model::Vertex;
-use encase::{ShaderType, internal::WriteInto};
 
 mod material;
 mod model;
 mod texture;
 
-#[derive(Debug, Copy, Clone, ShaderType)]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
 struct ObjectUniform {
     model: Mat4,
     normal: Mat4, // inverse-transpose(model)
@@ -24,7 +24,8 @@ impl ObjectUniform {
     }
 }
 
-#[derive(Debug, Copy, Clone, ShaderType)]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
     // 0..16
     time: f32,
@@ -50,7 +51,6 @@ struct GpuData<R> {
     data: R,
     buffer: wgpu::Buffer,
     bindgroup: wgpu::BindGroup,
-    staging: Vec<u8>,
 }
 
 pub struct Renderbud {
@@ -102,11 +102,9 @@ fn make_global_gpudata(
 
     println!("Globals size = {}", std::mem::size_of::<Globals>());
 
-    let ubo_size = Globals::min_size().get();
-
     let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("globals"),
-        size: ubo_size,
+        size: std::mem::size_of::<Globals>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -137,7 +135,6 @@ fn make_global_gpudata(
     (
         GpuData::<Globals> {
             data: globals,
-            staging: Vec::with_capacity(256),
             buffer: globals_buf,
             bindgroup: globals_bg,
         },
@@ -146,12 +143,9 @@ fn make_global_gpudata(
 }
 
 fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::BindGroupLayout) {
-    let object_uniform = ObjectUniform::from_model(Mat4::IDENTITY);
-    let object_ubo_size = ObjectUniform::min_size().get();
-
     let object_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("object"),
-        size: object_ubo_size,
+        size: std::mem::size_of::<ObjectUniform>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -181,8 +175,7 @@ fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::
 
     (
         GpuData::<ObjectUniform> {
-            data: object_uniform,
-            staging: Vec::with_capacity(128),
+            data: ObjectUniform::from_model(Mat4::IDENTITY),
             buffer: object_buf,
             bindgroup: object_bg,
         },
@@ -281,7 +274,11 @@ impl Renderbud {
     }
 
     pub fn update(&mut self) {
-        self.renderer.update(&self.queue);
+        self.renderer.update();
+    }
+
+    pub fn prepare(&self) {
+        self.renderer.prepare(&self.queue);
     }
 
     pub fn resize(&mut self, new_size: (u32, u32)) {
@@ -457,7 +454,7 @@ impl Renderer {
         self.depth_view = depth_view;
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue) {
+    pub fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
         //let t = self.globals_mut().time * 0.3;
@@ -466,10 +463,12 @@ impl Renderer {
         // Example: slowly rotate the test mesh so you can verify transforms
         let model = Mat4::from_rotation_y(self.globals.data.time * 0.6);
         self.object.data = ObjectUniform::from_model(model);
+    }
 
-        write_gpu_data(queue, &mut self.globals);
-        write_gpu_data(queue, &mut self.object);
-        write_gpu_data(queue, &mut self.material);
+    pub fn prepare(&self, queue: &wgpu::Queue) {
+        write_gpu_data(queue, &self.globals);
+        write_gpu_data(queue, &self.object);
+        write_gpu_data(queue, &self.material);
     }
 
     pub fn render(&mut self, frame: &wgpu::TextureView, encoder: &mut wgpu::CommandEncoder) {
@@ -519,11 +518,11 @@ impl Renderer {
     }
 }
 
-fn write_gpu_data<R: ShaderType + WriteInto>(queue: &wgpu::Queue, state: &mut GpuData<R>) {
-    state.staging.clear();
-    let mut storage = encase::UniformBuffer::new(&mut state.staging);
-    storage.write(&state.data).unwrap();
-    queue.write_buffer(&state.buffer, 0, storage.as_ref());
+fn write_gpu_data<R: bytemuck::NoUninit>(queue: &wgpu::Queue, state: &GpuData<R>) {
+    //state.staging.clear();
+    //let mut storage = encase::UniformBuffer::new(&mut state.staging);
+    //storage.write(&state.data).unwrap();
+    queue.write_buffer(&state.buffer, 0, bytemuck::bytes_of(&state.data));
 }
 
 fn create_depth(
@@ -558,3 +557,46 @@ pub fn calc_view_proj(eye: Vec3, width: f32, height: f32) -> Mat4 {
     let proj = Mat4::perspective_rh(45f32.to_radians(), width / height, 0.1, 100.0);
     proj * view
 }
+
+/*
+#[cfg(feature = "egui")]
+impl egui_wgpu::CallbackTrait for Renderer {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        self.update()
+        let resources: &CubeRenderResources = resources.get().unwrap();
+
+        // Update uniform buffer with both matrices
+        queue.write_buffer(&resources.uniform_buffer, 0, bytemuck::bytes_of(self));
+
+        Vec::new_with_capacity(0)
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let resources: &CubeRenderResources = resources.get().unwrap();
+
+        render_pass.set_pipeline(&resources.pipeline);
+        render_pass.set_bind_group(0, &resources.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
+        render_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(
+            0..mesh::CUBE_INDICES.len() as u32,
+            0,
+            0..resources.instance_count,
+        );
+    }
+}
+
+*/

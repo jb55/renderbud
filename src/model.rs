@@ -1,6 +1,3 @@
-// TODO: proper errors
-use encase::ShaderType;
-
 use glam::Vec4;
 
 use crate::material::{MaterialGpu, MaterialUniform};
@@ -464,16 +461,13 @@ fn make_material_gpu(
 ) -> MaterialGpu {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("material_ubo"),
-        size: MaterialUniform::min_size().get(),
+        size: std::mem::size_of::<MaterialUniform>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     // write uniform once
-    let mut staging = Vec::with_capacity(128);
-    let mut ub = encase::UniformBuffer::new(&mut staging);
-    ub.write(&uniform).unwrap();
-    queue.write_buffer(&buffer, 0, ub.as_ref());
+    queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&uniform));
 
     let bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material_bg"),

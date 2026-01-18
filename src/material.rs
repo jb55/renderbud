@@ -1,9 +1,9 @@
 use crate::GpuData;
 use crate::texture::{make_1x1_rgba8, texture_layout_entry};
-use encase::ShaderType;
 use glam::Vec4;
 
-#[derive(Debug, Copy, Clone, ShaderType)]
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialUniform {
     pub base_color_factor: glam::Vec4, // rgba
     pub metallic_factor: f32,
@@ -32,7 +32,7 @@ pub fn make_material_gpudata(
 
     let material_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("material"),
-        size: MaterialUniform::min_size().get(),
+        size: std::mem::size_of::<MaterialUniform>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -133,7 +133,6 @@ pub fn make_material_gpudata(
     (
         GpuData::<MaterialUniform> {
             data: material_uniform,
-            staging: Vec::with_capacity(128),
             buffer: material_buf,
             bindgroup: material_bg,
         },

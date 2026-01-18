@@ -14,9 +14,8 @@ winit = "0.30"
 wgpu = "24"
 bytemuck = { version = "1.14", features = ["derive"] }
 
-glam = "0.30.10"
+glam = { version = "0.30.10", features = ["bytemuck"] }
 gltf = "1.4"
-encase = { version = "0.11.1", features = ["glam"] }
 
 [dev-dependencies]
 pollster = "0.4.0"
