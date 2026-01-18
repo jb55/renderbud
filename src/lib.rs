@@ -339,9 +339,9 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let (globals, globals_bgl) = make_global_gpudata(&device, width as f32, height as f32);
-        let (object, object_bgl) = make_object_gpudata(&device);
-        let (material, material_bgl) = make_material_gpudata(&device, &queue);
+        let (globals, globals_bgl) = make_global_gpudata(device, width as f32, height as f32);
+        let (object, object_bgl) = make_object_gpudata(device);
+        let (material, material_bgl) = make_material_gpudata(device, queue);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
@@ -381,7 +381,7 @@ impl Renderer {
             multiview: None,
         });
 
-        let (depth_tex, depth_view) = create_depth(&device, width, height);
+        let (depth_tex, depth_view) = create_depth(device, width, height);
 
         /* TODO: move to example
         let model = load_gltf_model(
