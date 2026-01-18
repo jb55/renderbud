@@ -55,10 +55,14 @@ struct GpuData<R> {
 
 pub struct Renderbud {
     surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    size: winit::dpi::PhysicalSize<u32>,
+    renderer: Renderer,
+}
+
+pub struct Renderer {
+    size: (u32, u32),
 
     depth_tex: wgpu::Texture,
     depth_view: wgpu::TextureView,
@@ -261,15 +265,81 @@ impl Renderbud {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+
         surface.configure(&device, &config);
+
+        let renderer = Renderer::new(&device, &queue, format, (config.width, config.height));
+
+        Self {
+            config,
+            surface,
+            queue,
+            device,
+            renderer,
+        }
+    }
+
+    pub fn update(&mut self) {
+        self.renderer.update(&self.queue);
+    }
+
+    pub fn resize(&mut self, new_size: (u32, u32)) {
+        let width = new_size.0.max(1);
+        let height = new_size.1.max(1);
+
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+
+        self.renderer.resize(&self.device, (width, height))
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.renderer.size
+    }
+
+    pub fn set_model(&mut self, model: Model) {
+        self.renderer.set_model(model);
+    }
+
+    pub fn load_gltf_model(&self, path: impl AsRef<std::path::Path>) -> Result<Model, gltf::Error> {
+        self.renderer
+            .load_gltf_model(&self.device, &self.queue, path)
+    }
+
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let frame = self.surface.get_current_texture()?;
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        self.renderer.render(&view, &mut encoder);
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+
+        Ok(())
+    }
+}
+
+impl Renderer {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> Self {
+        let (width, height) = size;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let (globals, globals_bgl) =
-            make_global_gpudata(&device, config.width as f32, config.height as f32);
+        let (globals, globals_bgl) = make_global_gpudata(&device, width as f32, height as f32);
         let (object, object_bgl) = make_object_gpudata(&device);
         let (material, material_bgl) = make_material_gpudata(&device, &queue);
 
@@ -291,7 +361,7 @@ impl Renderbud {
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -311,7 +381,7 @@ impl Renderbud {
             multiview: None,
         });
 
-        let (depth_tex, depth_view) = create_depth(&device, &config);
+        let (depth_tex, depth_view) = create_depth(&device, width, height);
 
         /* TODO: move to example
         let model = load_gltf_model(
@@ -326,10 +396,6 @@ impl Renderbud {
         let model = None;
 
         Self {
-            surface,
-            device,
-            queue,
-            config,
             size,
             pipeline,
             globals,
@@ -343,7 +409,7 @@ impl Renderbud {
         }
     }
 
-    pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
+    pub fn size(&self) -> (u32, u32) {
         self.size
     }
 
@@ -355,29 +421,29 @@ impl Renderbud {
         self.model = Some(model);
     }
 
-    pub fn load_gltf_model(&self, path: impl AsRef<std::path::Path>) -> Result<Model, gltf::Error> {
-        crate::model::load_gltf_model(&self.device, &self.queue, &self.material_bgl, path)
+    pub fn load_gltf_model(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Model, gltf::Error> {
+        crate::model::load_gltf_model(device, queue, &self.material_bgl, path)
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        let width = new_size.width.max(1);
-        let height = new_size.height.max(1);
+    pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
+        let (width, height) = size;
+        self.size = size;
 
-        self.size = new_size;
-        self.config.width = width;
-        self.config.height = height;
         self.globals_mut().resolution = Vec2::new(width as f32, height as f32);
-        self.surface.configure(&self.device, &self.config);
-
         self.globals_mut().view_proj =
             calc_view_proj(self.globals_mut().cam_pos, width as f32, height as f32);
 
-        let (depth_tex, depth_view) = create_depth(&self.device, &self.config);
+        let (depth_tex, depth_view) = create_depth(device, width, height);
         self.depth_tex = depth_tex;
         self.depth_view = depth_view;
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, queue: &wgpu::Queue) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
         //let t = self.globals_mut().time * 0.3;
@@ -387,70 +453,55 @@ impl Renderbud {
         let model = Mat4::from_rotation_y(self.globals.data.time * 0.6);
         self.object.data = ObjectUniform::from_model(model);
 
-        write_gpu_data(&self.queue, &mut self.globals);
-        write_gpu_data(&self.queue, &mut self.object);
-        write_gpu_data(&self.queue, &mut self.material);
+        write_gpu_data(queue, &mut self.globals);
+        write_gpu_data(queue, &mut self.object);
+        write_gpu_data(queue, &mut self.material);
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let frame = self.surface.get_current_texture()?;
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rpass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.00,
-                            g: 0.00,
-                            b: 0.00,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+    pub fn render(&mut self, frame: &wgpu::TextureView, encoder: &mut wgpu::CommandEncoder) {
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rpass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: frame,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.00,
+                        g: 0.00,
+                        b: 0.00,
+                        a: 1.0,
                     }),
-                    stencil_ops: None,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
 
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
-            rpass.set_bind_group(1, &self.object.bindgroup, &[]);
+        self.render_pass(&mut rpass);
+    }
 
-            if let Some(model) = self.model.as_ref() {
-                for d in &model.draws {
-                    rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
-                    rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-                    rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
-                }
+    pub fn render_pass<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>) {
+        rpass.set_pipeline(&self.pipeline);
+        rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
+        rpass.set_bind_group(1, &self.object.bindgroup, &[]);
+
+        if let Some(model) = self.model.as_ref() {
+            for d in &model.draws {
+                rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
+                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
             }
-
-            //rpass.set_vertex_buffer(0, self.test_mesh.vert_buf.slice(..));
-            //rpass.set_index_buffer(self.test_mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-            //rpass.draw_indexed(0..self.test_mesh.num_indices, 0, 0..1);
         }
-
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
     }
 }
 
@@ -463,11 +514,12 @@ fn write_gpu_data<R: ShaderType + WriteInto>(queue: &wgpu::Queue, state: &mut Gp
 
 fn create_depth(
     device: &wgpu::Device,
-    config: &wgpu::SurfaceConfiguration,
+    width: u32,
+    height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let size = wgpu::Extent3d {
-        width: config.width,
-        height: config.height,
+        width,
+        height,
         depth_or_array_layers: 1,
     };
     let tex = device.create_texture(&wgpu::TextureDescriptor {

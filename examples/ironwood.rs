@@ -26,7 +26,7 @@ fn main() {
             match event {
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(sz) => renderbud.resize(sz),
+                    WindowEvent::Resized(sz) => renderbud.resize((sz.width, sz.height)),
                     WindowEvent::KeyboardInput { event, .. } => {
                         if let KeyEvent {
                             physical_key: winit::keyboard::PhysicalKey::Code(code),
