@@ -1,12 +1,17 @@
 use glam::{Mat4, Vec2, Vec3};
 
 use crate::material::{MaterialUniform, make_material_gpudata};
-use crate::model::Model;
+use crate::model::ModelData;
 use crate::model::Vertex;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 mod material;
 mod model;
 mod texture;
+
+pub use model::Model;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
@@ -63,6 +68,7 @@ pub struct Renderbud {
 
 pub struct Renderer {
     size: (u32, u32),
+    model_ids: u64,
 
     depth_tex: wgpu::Texture,
     depth_view: wgpu::TextureView,
@@ -75,7 +81,7 @@ pub struct Renderer {
 
     material_bgl: wgpu::BindGroupLayout,
 
-    model: Option<Model>,
+    models: HashMap<Model, ModelData>,
 
     start: std::time::Instant,
 }
@@ -296,16 +302,15 @@ impl Renderbud {
         self.renderer.size
     }
 
-    pub fn set_model(&mut self, model: Model) {
-        self.renderer.set_model(model);
-    }
-
-    pub fn load_gltf_model(&self, path: impl AsRef<std::path::Path>) -> Result<Model, gltf::Error> {
+    pub fn load_gltf_model(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Model, gltf::Error> {
         self.renderer
             .load_gltf_model(&self.device, &self.queue, path)
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, model: Model) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -315,7 +320,7 @@ impl Renderbud {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        self.renderer.render(&view, &mut encoder);
+        self.renderer.render(&view, &mut encoder, model);
         self.queue.submit(Some(encoder.finish()));
         frame.present();
 
@@ -404,16 +409,17 @@ impl Renderer {
         .unwrap();
         */
 
-        let model = None;
+        let model_ids = 0;
 
         Self {
+            model_ids,
             size,
             pipeline,
             globals,
             object,
             material,
             material_bgl,
-            model,
+            models: HashMap::new(),
             depth_tex,
             depth_view,
             start: std::time::Instant::now(),
@@ -428,17 +434,20 @@ impl Renderer {
         &mut self.globals.data
     }
 
-    pub fn set_model(&mut self, model: Model) {
-        self.model = Some(model);
-    }
-
     pub fn load_gltf_model(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: impl AsRef<std::path::Path>,
     ) -> Result<Model, gltf::Error> {
-        crate::model::load_gltf_model(device, queue, &self.material_bgl, path)
+        let model_data = crate::model::load_gltf_model(device, queue, &self.material_bgl, path)?;
+
+        self.model_ids += 1;
+        let id = Model { id: self.model_ids };
+
+        self.models.insert(id, model_data);
+
+        Ok(id)
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
@@ -471,7 +480,12 @@ impl Renderer {
         write_gpu_data(queue, &self.material);
     }
 
-    pub fn render(&mut self, frame: &wgpu::TextureView, encoder: &mut wgpu::CommandEncoder) {
+    pub fn render(
+        &self,
+        frame: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+        model: Model,
+    ) {
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("rpass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -499,21 +513,23 @@ impl Renderer {
             timestamp_writes: None,
         });
 
-        self.render_pass(&mut rpass);
+        self.render_pass(&mut rpass, model);
     }
 
-    pub fn render_pass<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>) {
+    pub fn render_pass(&self, rpass: &mut wgpu::RenderPass<'_>, model: Model) {
+        let Some(model) = self.models.get(&model) else {
+            return;
+        };
+
         rpass.set_pipeline(&self.pipeline);
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
         rpass.set_bind_group(1, &self.object.bindgroup, &[]);
 
-        if let Some(model) = self.model.as_ref() {
-            for d in &model.draws {
-                rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
-                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
-            }
+        for d in &model.draws {
+            rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
+            rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+            rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
         }
     }
 }

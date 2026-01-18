@@ -25,9 +25,15 @@ pub struct ModelDraw {
     pub material_index: usize,
 }
 
-pub struct Model {
+pub struct ModelData {
     pub draws: Vec<ModelDraw>,
     pub materials: Vec<MaterialGpu>,
+}
+
+/// A model handle
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
+pub struct Model {
+    pub id: u64,
 }
 
 struct GltfWgpuCache {
@@ -188,7 +194,7 @@ pub fn load_gltf_model(
     queue: &wgpu::Queue,
     material_bgl: &wgpu::BindGroupLayout,
     path: impl AsRef<std::path::Path>,
-) -> Result<Model, gltf::Error> {
+) -> Result<ModelData, gltf::Error> {
     let path = path.as_ref();
 
     let (doc, buffers, images) = gltf::import(path)?;
@@ -388,7 +394,7 @@ pub fn load_gltf_model(
         }
     }
 
-    Ok(Model { draws, materials })
+    Ok(ModelData { draws, materials })
 }
 
 fn make_default_sampler(device: &wgpu::Device) -> wgpu::Sampler {
