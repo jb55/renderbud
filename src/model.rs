@@ -238,7 +238,7 @@ pub fn load_gltf_model(
         let bc_factor = pbr.base_color_factor();
         let metallic_factor = pbr.metallic_factor();
         let roughness_factor = pbr.roughness_factor();
-        let ao_strength = mat.occlusion_texture().map(|o| o.strength()).unwrap();
+        let ao_strength = mat.occlusion_texture().map(|o| o.strength()).unwrap_or(1.0);
 
         let mut chosen_sampler_idx: Option<usize> = None;
 
