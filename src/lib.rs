@@ -4,12 +4,13 @@ use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::ModelData;
 use crate::model::Vertex;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
 
 mod material;
 mod model;
 mod texture;
+
+#[cfg(feature = "egui")]
+pub mod egui;
 
 pub use model::Model;
 
@@ -68,6 +69,11 @@ pub struct Renderbud {
 
 pub struct Renderer {
     size: (u32, u32),
+
+    /// To propery resize we need a device. Provide a target size so
+    /// we can dynamically resize next time get one.
+    target_size: (u32, u32),
+
     model_ids: u64,
 
     depth_tex: wgpu::Texture,
@@ -295,7 +301,8 @@ impl Renderbud {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
 
-        self.renderer.resize(&self.device, (width, height))
+        self.renderer.set_target_size((width, height));
+        self.renderer.resize(&self.device)
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -412,6 +419,7 @@ impl Renderer {
         let model_ids = 0;
 
         Self {
+            target_size: size,
             model_ids,
             size,
             pipeline,
@@ -450,9 +458,18 @@ impl Renderer {
         Ok(id)
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        let (width, height) = size;
-        self.size = size;
+    /// Perform a resize if the target size is not the same as size
+    pub fn set_target_size(&mut self, size: (u32, u32)) {
+        self.target_size = size;
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device) {
+        if self.target_size == self.size {
+            return;
+        }
+
+        let (width, height) = self.target_size;
+        self.size = self.target_size;
 
         self.globals_mut().resolution = Vec2::new(width as f32, height as f32);
         self.globals_mut().view_proj =
@@ -546,6 +563,8 @@ fn create_depth(
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
+    assert!(width < 8192);
+    assert!(height < 8192);
     let size = wgpu::Extent3d {
         width,
         height,
@@ -573,46 +592,3 @@ pub fn calc_view_proj(eye: Vec3, width: f32, height: f32) -> Mat4 {
     let proj = Mat4::perspective_rh(45f32.to_radians(), width / height, 0.1, 100.0);
     proj * view
 }
-
-/*
-#[cfg(feature = "egui")]
-impl egui_wgpu::CallbackTrait for Renderer {
-    fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        egui_encoder: &mut wgpu::CommandEncoder,
-        resources: &mut egui_wgpu::CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        self.update()
-        let resources: &CubeRenderResources = resources.get().unwrap();
-
-        // Update uniform buffer with both matrices
-        queue.write_buffer(&resources.uniform_buffer, 0, bytemuck::bytes_of(self));
-
-        Vec::new_with_capacity(0)
-    }
-
-    fn paint(
-        &self,
-        _info: egui::PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass,
-        resources: &egui_wgpu::CallbackResources,
-    ) {
-        let resources: &CubeRenderResources = resources.get().unwrap();
-
-        render_pass.set_pipeline(&resources.pipeline);
-        render_pass.set_bind_group(0, &resources.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
-        render_pass.set_index_buffer(resources.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        render_pass.draw_indexed(
-            0..mesh::CUBE_INDICES.len() as u32,
-            0,
-            0..resources.instance_count,
-        );
-    }
-}
-
-*/
