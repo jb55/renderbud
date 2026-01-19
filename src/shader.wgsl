@@ -189,7 +189,9 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   // simple tonemap + gamma
   col = col / (col + vec3<f32>(1.0));
-  //col = pow(col, vec3<f32>(INV_GAMMA));
+
+  // we have to gamma correct in an egui context
+  col = pow(col, vec3<f32>(INV_GAMMA));
 
   return vec4<f32>(saturate3(col), 1.0);
 }
