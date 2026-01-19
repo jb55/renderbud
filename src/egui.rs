@@ -1,8 +1,8 @@
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 
-use crate::Renderer;
 use crate::Model;
+use crate::Renderer;
 
 #[derive(Clone)]
 pub struct EguiRenderer {
