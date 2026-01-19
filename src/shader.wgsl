@@ -2,7 +2,7 @@ const PI: f32 = 3.14159265;
 const EPS: f32 = 1e-4;
 
 const MIN_ROUGHNESS: f32 = 0.04;
-const AMBIENT_INTENSITY: f32 = 0.2;
+const AMBIENT_INTENSITY: f32 = 0.6;
 const INV_GAMMA: f32 = 1.0 / 2.2;
 
 struct Globals {
@@ -189,7 +189,7 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   // simple tonemap + gamma
   col = col / (col + vec3<f32>(1.0));
-  col = pow(col, vec3<f32>(INV_GAMMA));
+  //col = pow(col, vec3<f32>(INV_GAMMA));
 
   return vec4<f32>(saturate3(col), 1.0);
 }
