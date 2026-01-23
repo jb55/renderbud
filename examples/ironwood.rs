@@ -7,16 +7,12 @@ use winit::{
 };
 
 struct App {
-    model: Option<renderbud::Model>,
     renderbud: Option<renderbud::Renderbud>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self {
-            renderbud: None,
-            model: None,
-        }
+        Self { renderbud: None }
     }
 }
 
@@ -30,9 +26,10 @@ impl ApplicationHandler for App {
         let mut renderbud = pollster::block_on(renderbud::Renderbud::new(window));
 
         // pick a path relative to crate root
-        let model_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
-        self.model = Some(renderbud.load_gltf_model(model_path).unwrap());
+        //let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
+        let model_path = std::path::Path::new("/home/jb55/var/models/WaterBottle.glb");
+        //let model_path = std::path::Path::new("/home/jb55/var/models/ABeautifulGame.glb");
+        renderbud.load_gltf_model(model_path).unwrap();
 
         self.renderbud = Some(renderbud);
     }
@@ -72,14 +69,11 @@ impl ApplicationHandler for App {
             return;
         };
 
-        let Some(model) = self.model else {
-            return;
-        };
-
         // Continuous rendering.
         renderbud.update();
         renderbud.prepare();
-        match renderbud.render(model) {
+
+        match renderbud.render() {
             Ok(_) => {}
             Err(wgpu::SurfaceError::Lost) => renderbud.resize(renderbud.size()),
             Err(wgpu::SurfaceError::OutOfMemory) => el.exit(),

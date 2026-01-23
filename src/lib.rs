@@ -5,14 +5,18 @@ use crate::model::ModelData;
 use crate::model::Vertex;
 use std::collections::HashMap;
 
+mod camera;
 mod material;
 mod model;
 mod texture;
+mod world;
 
 #[cfg(feature = "egui")]
 pub mod egui;
 
+pub use camera::Camera;
 pub use model::Model;
+pub use world::World;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
@@ -53,6 +57,13 @@ struct Globals {
     view_proj: Mat4,
 }
 
+impl Globals {
+    fn set_camera(&mut self, w: f32, h: f32, camera: &Camera) {
+        self.cam_pos = camera.eye;
+        self.view_proj = camera.view_proj(w, h);
+    }
+}
+
 struct GpuData<R> {
     data: R,
     buffer: wgpu::Buffer,
@@ -78,8 +89,9 @@ pub struct Renderer {
 
     depth_tex: wgpu::Texture,
     depth_view: wgpu::TextureView,
-
     pipeline: wgpu::RenderPipeline,
+
+    world: World,
 
     globals: GpuData<Globals>,
     object: GpuData<ObjectUniform>,
@@ -96,20 +108,19 @@ fn make_global_gpudata(
     device: &wgpu::Device,
     width: f32,
     height: f32,
+    camera: &Camera,
 ) -> (GpuData<Globals>, wgpu::BindGroupLayout) {
-    let eye = Vec3::new(0.0, 16.0, 24.0);
-    let view_proj = calc_view_proj(eye, width, height);
     let globals = Globals {
         time: 0.0,
         _pad0: 0.0,
         resolution: Vec2::new(width, height),
-        cam_pos: eye,
+        cam_pos: camera.eye,
         _pad3: 0.0,
         light_dir: Vec3::new(0.8, 0.8, 0.8),
         _pad1: 0.0,
         light_color: Vec3::new(1.0, 0.98, 0.92),
         _pad2: 0.0,
-        view_proj,
+        view_proj: camera.view_proj(width, height),
     };
 
     println!("Globals size = {}", std::mem::size_of::<Globals>());
@@ -317,7 +328,7 @@ impl Renderbud {
             .load_gltf_model(&self.device, &self.queue, path)
     }
 
-    pub fn render(&mut self, model: Model) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -327,7 +338,7 @@ impl Renderbud {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        self.renderer.render(&view, &mut encoder, model);
+        self.renderer.render(&view, &mut encoder);
         self.queue.submit(Some(encoder.finish()));
         frame.present();
 
@@ -344,12 +355,17 @@ impl Renderer {
     ) -> Self {
         let (width, height) = size;
 
+        let eye = Vec3::new(0.0, 16.0, 24.0);
+        let target = Vec3::new(0.0, 0.0, 0.0);
+        let camera = Camera::new(eye, target);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let (globals, globals_bgl) = make_global_gpudata(device, width as f32, height as f32);
+        let (globals, globals_bgl) =
+            make_global_gpudata(device, width as f32, height as f32, &camera);
         let (object, object_bgl) = make_object_gpudata(device);
         let (material, material_bgl) = make_material_gpudata(device, queue);
 
@@ -418,7 +434,13 @@ impl Renderer {
 
         let model_ids = 0;
 
+        let world = World {
+            camera,
+            selected_model: None,
+        };
+
         Self {
+            world,
             target_size: size,
             model_ids,
             size,
@@ -455,6 +477,13 @@ impl Renderer {
 
         self.models.insert(id, model_data);
 
+        // TODO(jb55): we probably want to separate these
+        // pick it
+        self.world.selected_model = Some(id);
+
+        // point camera at it
+        self.focus_model(id);
+
         Ok(id)
     }
 
@@ -469,15 +498,39 @@ impl Renderer {
         }
 
         let (width, height) = self.target_size;
+        let w = width as f32;
+        let h = height as f32;
+
         self.size = self.target_size;
 
-        self.globals_mut().resolution = Vec2::new(width as f32, height as f32);
-        self.globals_mut().view_proj =
-            calc_view_proj(self.globals_mut().cam_pos, width as f32, height as f32);
+        self.globals.data.resolution = Vec2::new(w, h);
+        self.globals.data.set_camera(w, h, &self.world.camera);
 
         let (depth_tex, depth_view) = create_depth(device, width, height);
         self.depth_tex = depth_tex;
         self.depth_view = depth_view;
+    }
+
+    pub fn focus_model(&mut self, model: Model) {
+        let Some(md) = self.models.get(&model) else {
+            return;
+        };
+
+        let (w, h) = self.size;
+        let w = w as f32;
+        let h = h as f32;
+
+        let aspect = w / h.max(1.0);
+
+        self.world.camera = Camera::fit_to_aabb(
+            md.bounds.min,
+            md.bounds.max,
+            aspect,
+            45_f32.to_radians(),
+            1.2,
+        );
+
+        self.globals.data.set_camera(w, h, &self.world.camera);
     }
 
     pub fn update(&mut self) {
@@ -497,12 +550,7 @@ impl Renderer {
         write_gpu_data(queue, &self.material);
     }
 
-    pub fn render(
-        &self,
-        frame: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-        model: Model,
-    ) {
+    pub fn render(&self, frame: &wgpu::TextureView, encoder: &mut wgpu::CommandEncoder) {
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("rpass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -530,10 +578,14 @@ impl Renderer {
             timestamp_writes: None,
         });
 
-        self.render_pass(&mut rpass, model);
+        self.render_pass(&mut rpass);
     }
 
-    pub fn render_pass(&self, rpass: &mut wgpu::RenderPass<'_>, model: Model) {
+    pub fn render_pass(&self, rpass: &mut wgpu::RenderPass<'_>) {
+        let Some(model) = self.world.selected_model else {
+            return;
+        };
+
         let Some(model) = self.models.get(&model) else {
             return;
         };
@@ -582,13 +634,4 @@ fn create_depth(
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     (tex, view)
-}
-
-pub fn calc_view_proj(eye: Vec3, width: f32, height: f32) -> Mat4 {
-    let target = Vec3::new(0.0, 0.0, 0.0);
-    let up = Vec3::Y;
-
-    let view = Mat4::look_at_rh(eye, target, up);
-    let proj = Mat4::perspective_rh(45f32.to_radians(), width / height, 0.1, 100.0);
-    proj * view
 }
