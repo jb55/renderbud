@@ -138,7 +138,7 @@ impl Camera {
 
         // near/far based on distance + radius
         let znear = (dist - radius * 2.0).max(0.01);
-        let zfar = dist + radius * 4.0;
+        let zfar = dist + radius * 50.0;
 
         Self {
             eye,
