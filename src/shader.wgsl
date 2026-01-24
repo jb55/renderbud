@@ -18,6 +18,12 @@ struct Globals {
     light_color: vec3<f32>,
     _pad2: f32,
 
+    fill_light_dir: vec3<f32>,
+    _pad4: f32,
+
+    fill_light_color: vec3<f32>,
+    _pad5: f32,
+
     view_proj: mat4x4<f32>,
 };
 
@@ -187,11 +193,27 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
 
   let direct = (diff + spec) * (globals.light_color * NdotL);
 
+  // Fill light contribution
+  let L2 = safe_normalize(-globals.fill_light_dir);
+  let H2 = safe_normalize(V + L2);
+  let NdotL2 = saturate(dot(N, L2));
+  let NdotH2 = saturate(dot(N, H2));
+  let VdotH2 = saturate(dot(V, H2));
+
+  let D2 = ggx_ndf(NdotH2, alpha);
+  let Gs2 = smith_g_schlick_ggx(NdotV, NdotL2, alpha);
+  let F2 = fresnel_schlick(VdotH2, F0);
+  let denom2 = max(4.0 * NdotV * NdotL2, EPS);
+  let spec2 = (D2 * Gs2) * F2 / denom2;
+  let kd2 = (vec3<f32>(1.0) - F2) * (1.0 - metallic);
+  let diff2 = kd2 * diffuse_lambert(diffuseColor);
+  let fill = (diff2 + spec2) * (globals.fill_light_color * NdotL2);
+
   // Diffuse IBL: sample irradiance cubemap with normal direction
   let irradiance = textureSample(irradiance_map, ibl_sampler, N).rgb;
   let ambient = diffuseColor * irradiance * ao;
 
-  var col = direct + ambient;
+  var col = direct + fill + ambient;
 
   // simple tonemap + gamma
   col = col / (col + vec3<f32>(1.0));

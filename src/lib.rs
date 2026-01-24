@@ -55,6 +55,14 @@ struct Globals {
     light_color: Vec3,
     _pad2: f32,
 
+    // 64..80
+    fill_light_dir: Vec3,
+    _pad4: f32,
+
+    // 80..96
+    fill_light_color: Vec3,
+    _pad5: f32,
+
     view_proj: Mat4,
 }
 
@@ -120,10 +128,16 @@ fn make_global_gpudata(
         resolution: Vec2::new(width, height),
         cam_pos: camera.eye,
         _pad3: 0.0,
+        // Key light: warm, from upper right
         light_dir: Vec3::new(0.9, 0.4, 0.4),
         _pad1: 0.0,
         light_color: Vec3::new(1.0, 0.98, 0.92),
         _pad2: 0.0,
+        // Fill light: cooler, from lower left (opposite side)
+        fill_light_dir: Vec3::new(-0.7, -0.3, -0.5),
+        _pad4: 0.0,
+        fill_light_color: Vec3::new(0.5, 0.55, 0.6),
+        _pad5: 0.0,
         view_proj: camera.view_proj(width, height),
     };
 
