@@ -55,6 +55,8 @@ struct Material {
 // IBL
 @group(3) @binding(0) var irradiance_map: texture_cube<f32>;
 @group(3) @binding(1) var ibl_sampler: sampler;
+@group(3) @binding(2) var prefiltered_map: texture_cube<f32>;
+@group(3) @binding(3) var brdf_lut: texture_2d<f32>;
 
 struct VSIn {
   @location(0) pos: vec3<f32>,
@@ -104,6 +106,34 @@ fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
   let ct = saturate(cosTheta);
   let f = pow(1.0 - ct, 5.0);
   return F0 + (1.0 - F0) * f;
+}
+
+// Fresnel with roughness attenuation for IBL
+fn fresnel_schlick_roughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
+  let ct = saturate(cosTheta);
+  let f = pow(1.0 - ct, 5.0);
+  return F0 + (max(vec3<f32>(1.0 - roughness), F0) - F0) * f;
+}
+
+// Specular IBL using split-sum approximation
+fn specular_ibl(N: vec3<f32>, V: vec3<f32>, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
+  let R = reflect(-V, N);
+
+  // Sample pre-filtered environment at roughness-based mip level
+  let MAX_REFLECTION_LOD = 4.0;  // mip_count - 1
+  let prefiltered = textureSampleLevel(
+    prefiltered_map,
+    ibl_sampler,
+    R,
+    roughness * MAX_REFLECTION_LOD
+  ).rgb;
+
+  // Sample BRDF LUT
+  let NdotV = saturate(dot(N, V));
+  let brdf = textureSample(brdf_lut, ibl_sampler, vec2<f32>(NdotV, roughness)).rg;
+
+  // Combine using split-sum: prefiltered * (F0 * scale + bias)
+  return prefiltered * (F0 * brdf.x + brdf.y);
 }
 
 // GGX / Trowbridge-Reitz NDF
@@ -209,9 +239,19 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let diff2 = kd2 * diffuse_lambert(diffuseColor);
   let fill = (diff2 + spec2) * (globals.fill_light_color * NdotL2);
 
-  // Diffuse IBL: sample irradiance cubemap with normal direction
+  // IBL ambient lighting with energy conservation
   let irradiance = textureSample(irradiance_map, ibl_sampler, N).rgb;
-  let ambient = diffuseColor * irradiance * ao;
+
+  // Specular IBL
+  let specular_ambient = specular_ibl(N, V, F0, roughness);
+
+  // Energy conservation: kS is already accounted for in specular_ibl via F0
+  // kD ensures diffuse doesn't add energy where specular dominates
+  let kS = fresnel_schlick_roughness(NdotV, F0, roughness);
+  let kD = (1.0 - kS) * (1.0 - metallic);
+
+  let diffuse_ambient = kD * diffuseColor * irradiance;
+  let ambient = (diffuse_ambient + specular_ambient) * ao;
 
   var col = direct + fill + ambient;
 
