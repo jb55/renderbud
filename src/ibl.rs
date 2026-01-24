@@ -178,7 +178,8 @@ pub fn load_hdr_ibl(
     let height = img.height();
     let pixels: Vec<_> = img.pixels().cloned().collect();
 
-    let irradiance_view = equirect_to_cubemap(device, queue, &pixels, width, height, 256);
+    // Convolve for diffuse irradiance (CPU-side, relatively slow but correct)
+    let irradiance_view = equirect_to_irradiance_cubemap(device, queue, &pixels, width, height, 32);
 
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("ibl_sampler"),
@@ -213,7 +214,182 @@ pub fn load_hdr_ibl(
     })
 }
 
-/// Convert equirectangular panorama to cubemap.
+/// Convert equirectangular panorama to irradiance cubemap (with hemisphere convolution).
+fn equirect_to_irradiance_cubemap(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pixels: &[image::Rgb<f32>],
+    src_width: u32,
+    src_height: u32,
+    face_size: u32,
+) -> wgpu::TextureView {
+    let extent = wgpu::Extent3d {
+        width: face_size,
+        height: face_size,
+        depth_or_array_layers: 6,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("irradiance_cubemap"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    let bytes_per_pixel = 8usize;
+    let unpadded_row = face_size as usize * bytes_per_pixel;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+    let padded_row = unpadded_row.div_ceil(align) * align;
+
+    for face in 0..6 {
+        let mut data = vec![0u8; padded_row * face_size as usize];
+
+        for y in 0..face_size {
+            for x in 0..face_size {
+                let u = (x as f32 + 0.5) / face_size as f32 * 2.0 - 1.0;
+                let v = (y as f32 + 0.5) / face_size as f32 * 2.0 - 1.0;
+
+                let dir = face_uv_to_direction(face, u, v);
+                let n = normalize(dir);
+
+                // Convolve hemisphere for diffuse irradiance
+                let color = convolve_irradiance(pixels, src_width, src_height, n);
+
+                let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
+                let r = half::f16::from_f32(color[0]);
+                let g = half::f16::from_f32(color[1]);
+                let b = half::f16::from_f32(color[2]);
+                let a = half::f16::from_f32(1.0);
+
+                data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
+                data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
+                data[offset + 4..offset + 6].copy_from_slice(&b.to_le_bytes());
+                data[offset + 6..offset + 8].copy_from_slice(&a.to_le_bytes());
+            }
+        }
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: face },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row as u32),
+                rows_per_image: Some(face_size),
+            },
+            wgpu::Extent3d {
+                width: face_size,
+                height: face_size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("irradiance_cubemap_view"),
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    [v[0] / len, v[1] / len, v[2] / len]
+}
+
+/// Integrate the environment map over a hemisphere for diffuse irradiance.
+/// Uses discrete sampling over the hemisphere.
+fn convolve_irradiance(
+    pixels: &[image::Rgb<f32>],
+    width: u32,
+    height: u32,
+    normal: [f32; 3],
+) -> [f32; 3] {
+    let mut irradiance = [0.0f32; 3];
+
+    // Build tangent frame from normal
+    let up = if normal[1].abs() < 0.999 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let tangent = normalize(cross(up, normal));
+    let bitangent = cross(normal, tangent);
+
+    // Sample hemisphere with uniform spacing
+    let sample_delta = 0.05; // Adjust for quality vs speed
+    let mut n_samples = 0u32;
+
+    let mut phi = 0.0f32;
+    while phi < 2.0 * std::f32::consts::PI {
+        let mut theta = 0.0f32;
+        while theta < 0.5 * std::f32::consts::PI {
+            // Spherical to cartesian (in tangent space)
+            let sin_theta = theta.sin();
+            let cos_theta = theta.cos();
+            let sin_phi = phi.sin();
+            let cos_phi = phi.cos();
+
+            let tangent_sample = [
+                sin_theta * cos_phi,
+                sin_theta * sin_phi,
+                cos_theta,
+            ];
+
+            // Transform to world space
+            let sample_dir = [
+                tangent_sample[0] * tangent[0]
+                    + tangent_sample[1] * bitangent[0]
+                    + tangent_sample[2] * normal[0],
+                tangent_sample[0] * tangent[1]
+                    + tangent_sample[1] * bitangent[1]
+                    + tangent_sample[2] * normal[1],
+                tangent_sample[0] * tangent[2]
+                    + tangent_sample[1] * bitangent[2]
+                    + tangent_sample[2] * normal[2],
+            ];
+
+            let color = sample_equirect(pixels, width, height, sample_dir);
+
+            // Weight by cos(theta) * sin(theta) for hemisphere integration
+            let weight = cos_theta * sin_theta;
+            irradiance[0] += color[0] * weight;
+            irradiance[1] += color[1] * weight;
+            irradiance[2] += color[2] * weight;
+            n_samples += 1;
+
+            theta += sample_delta;
+        }
+        phi += sample_delta;
+    }
+
+    // Normalize
+    let scale = std::f32::consts::PI / n_samples as f32;
+    [
+        irradiance[0] * scale,
+        irradiance[1] * scale,
+        irradiance[2] * scale,
+    ]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Convert equirectangular panorama to cubemap (raw, no convolution).
+#[allow(dead_code)]
 fn equirect_to_cubemap(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
