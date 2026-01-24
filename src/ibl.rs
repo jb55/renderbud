@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::path::Path;
 
 pub struct IblData {
@@ -396,30 +397,37 @@ fn equirect_to_irradiance_cubemap(
     let padded_row = unpadded_row.div_ceil(align) * align;
 
     for face in 0..6 {
-        let mut data = vec![0u8; padded_row * face_size as usize];
-
-        for y in 0..face_size {
-            for x in 0..face_size {
+        // Compute all pixels in parallel
+        let pixel_colors: Vec<[f32; 3]> = (0..face_size * face_size)
+            .into_par_iter()
+            .map(|idx| {
+                let x = idx % face_size;
+                let y = idx / face_size;
                 let u = (x as f32 + 0.5) / face_size as f32 * 2.0 - 1.0;
                 let v = (y as f32 + 0.5) / face_size as f32 * 2.0 - 1.0;
 
                 let dir = face_uv_to_direction(face, u, v);
                 let n = normalize(dir);
+                convolve_irradiance(pixels, src_width, src_height, n)
+            })
+            .collect();
 
-                // Convolve hemisphere for diffuse irradiance
-                let color = convolve_irradiance(pixels, src_width, src_height, n);
+        // Write results to buffer
+        let mut data = vec![0u8; padded_row * face_size as usize];
+        for (idx, color) in pixel_colors.iter().enumerate() {
+            let x = idx as u32 % face_size;
+            let y = idx as u32 / face_size;
+            let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
 
-                let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
-                let r = half::f16::from_f32(color[0]);
-                let g = half::f16::from_f32(color[1]);
-                let b = half::f16::from_f32(color[2]);
-                let a = half::f16::from_f32(1.0);
+            let r = half::f16::from_f32(color[0]);
+            let g = half::f16::from_f32(color[1]);
+            let b = half::f16::from_f32(color[2]);
+            let a = half::f16::from_f32(1.0);
 
-                data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
-                data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
-                data[offset + 4..offset + 6].copy_from_slice(&b.to_le_bytes());
-                data[offset + 6..offset + 8].copy_from_slice(&a.to_le_bytes());
-            }
+            data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
+            data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
+            data[offset + 4..offset + 6].copy_from_slice(&b.to_le_bytes());
+            data[offset + 6..offset + 8].copy_from_slice(&a.to_le_bytes());
         }
 
         queue.write_texture(
@@ -603,23 +611,32 @@ fn generate_brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> w
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
     let padded_row = unpadded_row.div_ceil(align) * align;
 
-    let mut data = vec![0u8; padded_row * size as usize];
     let sample_count = 1024u32;
 
-    for y in 0..size {
-        for x in 0..size {
+    // Compute all BRDF values in parallel
+    let brdf_values: Vec<(f32, f32)> = (0..size * size)
+        .into_par_iter()
+        .map(|idx| {
+            let x = idx % size;
+            let y = idx / size;
             let ndot_v = (x as f32 + 0.5) / size as f32;
             let roughness = (y as f32 + 0.5) / size as f32;
+            integrate_brdf(ndot_v.max(0.001), roughness, sample_count)
+        })
+        .collect();
 
-            let (scale, bias) = integrate_brdf(ndot_v.max(0.001), roughness, sample_count);
+    // Write results to buffer
+    let mut data = vec![0u8; padded_row * size as usize];
+    for (idx, (scale, bias)) in brdf_values.iter().enumerate() {
+        let x = idx as u32 % size;
+        let y = idx as u32 / size;
+        let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
 
-            let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
-            let r = half::f16::from_f32(scale);
-            let g = half::f16::from_f32(bias);
+        let r = half::f16::from_f32(*scale);
+        let g = half::f16::from_f32(*bias);
 
-            data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
-            data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
-        }
+        data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
+        data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
     }
 
     queue.write_texture(
@@ -769,27 +786,36 @@ fn generate_prefiltered_cubemap(
         let padded_row = unpadded_row.div_ceil(align) * align;
 
         for face in 0..6u32 {
-            let mut data = vec![0u8; padded_row * mip_size as usize];
-
-            for y in 0..mip_size {
-                for x in 0..mip_size {
+            // Compute all pixels in parallel
+            let pixel_colors: Vec<[f32; 3]> = (0..mip_size * mip_size)
+                .into_par_iter()
+                .map(|idx| {
+                    let x = idx % mip_size;
+                    let y = idx / mip_size;
                     let u = (x as f32 + 0.5) / mip_size as f32 * 2.0 - 1.0;
                     let v = (y as f32 + 0.5) / mip_size as f32 * 2.0 - 1.0;
 
                     let n = normalize(face_uv_to_direction(face, u, v));
-                    let color = prefilter_env_map(pixels, src_width, src_height, n, roughness, sample_count);
+                    prefilter_env_map(pixels, src_width, src_height, n, roughness, sample_count)
+                })
+                .collect();
 
-                    let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
-                    let r = half::f16::from_f32(color[0]);
-                    let g = half::f16::from_f32(color[1]);
-                    let b = half::f16::from_f32(color[2]);
-                    let a = half::f16::from_f32(1.0);
+            // Write results to buffer
+            let mut data = vec![0u8; padded_row * mip_size as usize];
+            for (idx, color) in pixel_colors.iter().enumerate() {
+                let x = idx as u32 % mip_size;
+                let y = idx as u32 / mip_size;
+                let offset = (y as usize * padded_row) + (x as usize * bytes_per_pixel);
 
-                    data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
-                    data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
-                    data[offset + 4..offset + 6].copy_from_slice(&b.to_le_bytes());
-                    data[offset + 6..offset + 8].copy_from_slice(&a.to_le_bytes());
-                }
+                let r = half::f16::from_f32(color[0]);
+                let g = half::f16::from_f32(color[1]);
+                let b = half::f16::from_f32(color[2]);
+                let a = half::f16::from_f32(1.0);
+
+                data[offset..offset + 2].copy_from_slice(&r.to_le_bytes());
+                data[offset + 2..offset + 4].copy_from_slice(&g.to_le_bytes());
+                data[offset + 4..offset + 6].copy_from_slice(&b.to_le_bytes());
+                data[offset + 6..offset + 8].copy_from_slice(&a.to_le_bytes());
             }
 
             queue.write_texture(
