@@ -15,7 +15,7 @@ mod world;
 #[cfg(feature = "egui")]
 pub mod egui;
 
-pub use camera::Camera;
+pub use camera::{ArcballController, Camera};
 pub use model::Model;
 pub use world::World;
 
@@ -93,6 +93,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
 
     world: World,
+    arcball: camera::ArcballController,
 
     globals: GpuData<Globals>,
     object: GpuData<ObjectUniform>,
@@ -323,6 +324,16 @@ impl Renderbud {
         self.renderer.size
     }
 
+    /// Handle mouse drag for arcball rotation.
+    pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
+        self.renderer.on_mouse_drag(delta_x, delta_y);
+    }
+
+    /// Handle scroll for arcball zoom.
+    pub fn on_scroll(&mut self, delta: f32) {
+        self.renderer.on_scroll(delta);
+    }
+
     pub fn load_gltf_model(
         &mut self,
         path: impl AsRef<std::path::Path>,
@@ -446,8 +457,11 @@ impl Renderer {
             selected_model: None,
         };
 
+        let arcball = camera::ArcballController::from_camera(&world.camera);
+
         Self {
             world,
+            arcball,
             target_size: size,
             model_ids,
             size,
@@ -538,11 +552,29 @@ impl Renderer {
             1.2,
         );
 
+        // Sync arcball to new camera position
+        self.arcball = camera::ArcballController::from_camera(&self.world.camera);
+
         self.globals.data.set_camera(w, h, &self.world.camera);
+    }
+
+    /// Handle mouse drag for arcball rotation.
+    pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
+        self.arcball.on_drag(delta_x, delta_y);
+    }
+
+    /// Handle scroll for arcball zoom.
+    pub fn on_scroll(&mut self, delta: f32) {
+        self.arcball.on_scroll(delta);
     }
 
     pub fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
+
+        // Update camera from arcball controller
+        self.arcball.update_camera(&mut self.world.camera);
+        let (w, h) = self.size;
+        self.globals.data.set_camera(w as f32, h as f32, &self.world.camera);
 
         //let t = self.globals_mut().time * 0.3;
         //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);

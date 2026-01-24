@@ -1,6 +1,6 @@
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
@@ -8,11 +8,17 @@ use winit::{
 
 struct App {
     renderbud: Option<renderbud::Renderbud>,
+    mouse_pressed: bool,
+    last_mouse_pos: Option<(f64, f64)>,
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self { renderbud: None }
+        Self {
+            renderbud: None,
+            mouse_pressed: false,
+            last_mouse_pos: None,
+        }
     }
 }
 
@@ -58,6 +64,35 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 }
+            }
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                if button == MouseButton::Left {
+                    self.mouse_pressed = state == ElementState::Pressed;
+                    if !self.mouse_pressed {
+                        self.last_mouse_pos = None;
+                    }
+                }
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                let pos = (position.x, position.y);
+                if self.mouse_pressed {
+                    if let Some(last) = self.last_mouse_pos {
+                        let dx = (pos.0 - last.0) as f32;
+                        let dy = (pos.1 - last.1) as f32;
+                        renderbud.on_mouse_drag(dx, dy);
+                    }
+                }
+                self.last_mouse_pos = Some(pos);
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
+                };
+                renderbud.on_scroll(scroll);
             }
 
             _ => {}
