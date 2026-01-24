@@ -9,7 +9,7 @@ edition = "2024"
 #image = { workspace = true }
 #bytemuck = { workspace = true }
 
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
 winit = "0.30"
 wgpu = "24"
 bytemuck = { version = "1.14", features = ["derive"] }

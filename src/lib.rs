@@ -373,7 +373,8 @@ impl Renderer {
         let (material, material_bgl) = make_material_gpudata(device, queue);
 
         let ibl_bgl = ibl::create_ibl_bind_group_layout(device);
-        let ibl = ibl::create_test_ibl(device, queue, &ibl_bgl);
+        let ibl = ibl::load_hdr_ibl(device, queue, &ibl_bgl, "assets/venice_sunset_1k.hdr")
+            .expect("failed to load HDR environment map");
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
