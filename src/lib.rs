@@ -578,10 +578,6 @@ impl Renderer {
 
         //let t = self.globals_mut().time * 0.3;
         //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);
-
-        // Example: slowly rotate the test mesh so you can verify transforms
-        let model = Mat4::from_rotation_y(self.globals.data.time * 0.6);
-        self.object.data = ObjectUniform::from_model(model);
     }
 
     pub fn prepare(&self, queue: &wgpu::Queue) {

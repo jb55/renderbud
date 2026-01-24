@@ -61,7 +61,7 @@ impl ArcballController {
     /// Handle mouse drag delta (in pixels).
     pub fn on_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.yaw -= delta_x * self.sensitivity;
-        self.pitch -= delta_y * self.sensitivity;
+        self.pitch += delta_y * self.sensitivity;
 
         // Clamp pitch to avoid gimbal lock
         let limit = std::f32::consts::FRAC_PI_2 - 0.01;
