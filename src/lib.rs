@@ -116,7 +116,7 @@ fn make_global_gpudata(
         resolution: Vec2::new(width, height),
         cam_pos: camera.eye,
         _pad3: 0.0,
-        light_dir: Vec3::new(0.8, 0.8, 0.8),
+        light_dir: Vec3::new(0.9, 0.4, 0.4),
         _pad1: 0.0,
         light_color: Vec3::new(1.0, 0.98, 0.92),
         _pad2: 0.0,
