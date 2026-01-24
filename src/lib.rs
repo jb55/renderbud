@@ -63,13 +63,18 @@ struct Globals {
     fill_light_color: Vec3,
     _pad5: f32,
 
+    // 96..160
     view_proj: Mat4,
+
+    // 160..224
+    inv_view_proj: Mat4,
 }
 
 impl Globals {
     fn set_camera(&mut self, w: f32, h: f32, camera: &Camera) {
         self.cam_pos = camera.eye;
         self.view_proj = camera.view_proj(w, h);
+        self.inv_view_proj = self.view_proj.inverse();
     }
 }
 
@@ -99,6 +104,7 @@ pub struct Renderer {
     depth_tex: wgpu::Texture,
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
+    skybox_pipeline: wgpu::RenderPipeline,
 
     world: World,
     arcball: camera::ArcballController,
@@ -122,6 +128,7 @@ fn make_global_gpudata(
     height: f32,
     camera: &Camera,
 ) -> (GpuData<Globals>, wgpu::BindGroupLayout) {
+    let view_proj = camera.view_proj(width, height);
     let globals = Globals {
         time: 0.0,
         _pad0: 0.0,
@@ -138,7 +145,8 @@ fn make_global_gpudata(
         _pad4: 0.0,
         fill_light_color: Vec3::new(0.5, 0.55, 0.6),
         _pad5: 0.0,
-        view_proj: camera.view_proj(width, height),
+        view_proj,
+        inv_view_proj: view_proj.inverse(),
     };
 
     println!("Globals size = {}", std::mem::size_of::<Globals>());
@@ -399,6 +407,7 @@ impl Renderer {
 
         let ibl_bgl = ibl::create_ibl_bind_group_layout(device);
         let ibl = ibl::load_hdr_ibl(device, queue, &ibl_bgl, "assets/venice_sunset_1k.hdr")
+        //let ibl = ibl::load_hdr_ibl(device, queue, &ibl_bgl, "assets/kloofendal_43d_clear_1k.hdr")
             .expect("failed to load HDR environment map");
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -452,6 +461,53 @@ impl Renderer {
             multiview: None,
         });
 
+        // Skybox pipeline
+        let skybox_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skybox_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("skybox.wgsl").into()),
+        });
+
+        let skybox_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skybox_pipeline_layout"),
+            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skybox_pipeline"),
+            cache: None,
+            layout: Some(&skybox_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &skybox_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
+                buffers: &[], // No vertex buffers - procedural fullscreen triangle
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &skybox_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         let (depth_tex, depth_view) = create_depth(device, width, height);
 
         /* TODO: move to example
@@ -480,6 +536,7 @@ impl Renderer {
             model_ids,
             size,
             pipeline,
+            skybox_pipeline,
             globals,
             object,
             material,
@@ -632,6 +689,15 @@ impl Renderer {
     }
 
     pub fn render_pass(&self, rpass: &mut wgpu::RenderPass<'_>) {
+        // 1. Draw skybox first (writes depth=1.0)
+        rpass.set_pipeline(&self.skybox_pipeline);
+        rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
+        rpass.set_bind_group(1, &self.object.bindgroup, &[]); // unused but required by layout
+        rpass.set_bind_group(2, &self.material.bindgroup, &[]); // unused but required by layout
+        rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
+        rpass.draw(0..3, 0..1);
+
+        // 2. Draw geometry (uses depth_compare: Less, so renders on top of skybox)
         let Some(model) = self.world.selected_model else {
             return;
         };

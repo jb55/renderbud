@@ -97,7 +97,7 @@ impl Camera {
             up: Vec3::Y,
             fov_y: 45_f32.to_radians(),
             znear: 0.1,
-            zfar: 100.0,
+            zfar: 1000.0,
         }
     }
 

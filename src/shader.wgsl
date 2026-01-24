@@ -25,6 +25,7 @@ struct Globals {
     _pad5: f32,
 
     view_proj: mat4x4<f32>,
+    inv_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
