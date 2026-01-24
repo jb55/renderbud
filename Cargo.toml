@@ -18,6 +18,7 @@ egui = { version = "0.33", optional = true }
 
 glam = { version = "0.30.10", features = ["bytemuck"] }
 gltf = "1.4"
+half = "2.7.1"
 
 [features]
 egui = ["egui-wgpu", "dep:egui"]

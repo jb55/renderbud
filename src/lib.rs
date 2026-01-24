@@ -6,6 +6,7 @@ use crate::model::Vertex;
 use std::collections::HashMap;
 
 mod camera;
+mod ibl;
 mod material;
 mod model;
 mod texture;
@@ -98,6 +99,8 @@ pub struct Renderer {
     material: GpuData<MaterialUniform>,
 
     material_bgl: wgpu::BindGroupLayout,
+
+    ibl: ibl::IblData,
 
     models: HashMap<Model, ModelData>,
 
@@ -369,9 +372,12 @@ impl Renderer {
         let (object, object_bgl) = make_object_gpudata(device);
         let (material, material_bgl) = make_material_gpudata(device, queue);
 
+        let ibl_bgl = ibl::create_ibl_bind_group_layout(device);
+        let ibl = ibl::create_test_ibl(device, queue, &ibl_bgl);
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
-            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl],
+            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
             push_constant_ranges: &[],
         });
 
@@ -449,6 +455,7 @@ impl Renderer {
             object,
             material,
             material_bgl,
+            ibl,
             models: HashMap::new(),
             depth_tex,
             depth_view,
@@ -593,6 +600,7 @@ impl Renderer {
         rpass.set_pipeline(&self.pipeline);
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
         rpass.set_bind_group(1, &self.object.bindgroup, &[]);
+        rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
 
         for d in &model.draws {
             rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);

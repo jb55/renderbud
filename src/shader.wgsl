@@ -2,7 +2,6 @@ const PI: f32 = 3.14159265;
 const EPS: f32 = 1e-4;
 
 const MIN_ROUGHNESS: f32 = 0.04;
-const AMBIENT_INTENSITY: f32 = 0.6;
 const INV_GAMMA: f32 = 1.0 / 2.2;
 
 struct Globals {
@@ -46,6 +45,10 @@ struct Material {
 @group(2) @binding(2) var basecolor_tex: texture_2d<f32>;
 @group(2) @binding(3) var ao_mr_tex: texture_2d<f32>;
 @group(2) @binding(4) var normal_tex: texture_2d<f32>;
+
+// IBL
+@group(3) @binding(0) var irradiance_map: texture_cube<f32>;
+@group(3) @binding(1) var ibl_sampler: sampler;
 
 struct VSIn {
   @location(0) pos: vec3<f32>,
@@ -183,7 +186,10 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
   let diff = kd * diffuse_lambert(diffuseColor);
 
   let direct = (diff + spec) * (globals.light_color * NdotL);
-  let ambient = diffuseColor * AMBIENT_INTENSITY * ao;
+
+  // Diffuse IBL: sample irradiance cubemap with normal direction
+  let irradiance = textureSample(irradiance_map, ibl_sampler, N).rgb;
+  let ambient = diffuseColor * irradiance * ao;
 
   var col = direct + ambient;
 

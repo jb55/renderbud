@@ -1666,6 +1666,7 @@ dependencies = [
  "egui-wgpu",
  "glam",
  "gltf",
+ "half",
  "image",
  "pollster",
  "wgpu 24.0.5",
