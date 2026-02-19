@@ -1,4 +1,4 @@
-use glam::Vec4;
+use glam::{Vec3, Vec4};
 
 use crate::material::{MaterialGpu, MaterialUniform};
 use crate::texture::upload_rgba8_texture_2d;
@@ -28,6 +28,7 @@ pub struct ModelDraw {
 pub struct ModelData {
     pub draws: Vec<ModelDraw>,
     pub materials: Vec<MaterialGpu>,
+    pub bounds: Aabb, // <- add this
 }
 
 /// A model handle
@@ -319,6 +320,7 @@ pub fn load_gltf_model(
     ));
 
     let mut draws: Vec<ModelDraw> = Vec::new();
+    let mut bounds = Aabb::empty();
 
     for mesh in doc.meshes() {
         for prim in mesh.primitives() {
@@ -359,6 +361,7 @@ pub fn load_gltf_model(
 
             let mut verts: Vec<Vertex> = Vec::with_capacity(positions.len());
             for i in 0..positions.len() {
+                bounds.include_point(Vec3::from(positions[i]));
                 verts.push(Vertex {
                     pos: positions[i],
                     normal: normals[i],
@@ -394,7 +397,11 @@ pub fn load_gltf_model(
         }
     }
 
-    Ok(ModelData { draws, materials })
+    Ok(ModelData {
+        draws,
+        materials,
+        bounds,
+    })
 }
 
 fn make_default_sampler(device: &wgpu::Device) -> wgpu::Sampler {
@@ -572,5 +579,37 @@ fn compute_tangents(verts: &mut [Vertex], indices: &[u16]) {
         };
 
         verts[i].tangent = [t_ortho.x, t_ortho.y, t_ortho.z, w];
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Aabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl Aabb {
+    pub fn empty() -> Self {
+        Self {
+            min: Vec3::splat(f32::INFINITY),
+            max: Vec3::splat(f32::NEG_INFINITY),
+        }
+    }
+
+    pub fn include_point(&mut self, p: Vec3) {
+        self.min = self.min.min(p);
+        self.max = self.max.max(p);
+    }
+
+    pub fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+
+    pub fn half_extents(&self) -> Vec3 {
+        (self.max - self.min) * 0.5
+    }
+
+    pub fn radius(&self) -> f32 {
+        self.half_extents().length()
     }
 }

@@ -1,8 +1,8 @@
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 
-use crate::Renderer;
 use crate::Model;
+use crate::Renderer;
 
 #[derive(Clone)]
 pub struct EguiRenderer {
@@ -51,7 +51,7 @@ impl egui_wgpu::CallbackTrait for Model {
     fn paint(
         &self,
         _info: egui::PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass<'_>,
+        render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
         let egui_renderer: &EguiRenderer = resources.get().unwrap();
