@@ -461,3 +461,433 @@ impl World {
         self.renderables.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Model;
+    use glam::Vec3;
+
+    fn test_world() -> World {
+        World::new(Camera::new(Vec3::new(0.0, 2.0, 5.0), Vec3::ZERO))
+    }
+
+    fn model(id: u64) -> Model {
+        Model { id }
+    }
+
+    // ── Arena basics ──────────────────────────────────────────────
+
+    #[test]
+    fn create_node_returns_valid_id() {
+        let mut w = test_world();
+        let id = w.create_node(Transform::default(), None);
+        assert!(w.is_valid(id));
+        assert!(w.get_node(id).is_some());
+    }
+
+    #[test]
+    fn create_renderable_appears_in_renderables() {
+        let mut w = test_world();
+        let id = w.create_renderable(model(1), Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.renderables().len(), 1);
+        assert_eq!(w.renderables()[0], id);
+    }
+
+    #[test]
+    fn grouping_node_not_in_renderables() {
+        let mut w = test_world();
+        w.create_node(Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.renderables().len(), 0);
+    }
+
+    #[test]
+    fn multiple_renderables() {
+        let mut w = test_world();
+        let a = w.create_renderable(model(1), Transform::default(), None);
+        let b = w.create_renderable(model(2), Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 2);
+        let ids = w.renderables();
+        assert!(ids.contains(&a));
+        assert!(ids.contains(&b));
+    }
+
+    // ── Removal and free list ─────────────────────────────────────
+
+    #[test]
+    fn remove_node_invalidates_id() {
+        let mut w = test_world();
+        let id = w.create_renderable(model(1), Transform::default(), None);
+        assert!(w.remove_node(id));
+        assert!(!w.is_valid(id));
+        assert!(w.get_node(id).is_none());
+    }
+
+    #[test]
+    fn remove_node_clears_renderables() {
+        let mut w = test_world();
+        let id = w.create_renderable(model(1), Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 1);
+        w.remove_node(id);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 0);
+    }
+
+    #[test]
+    fn stale_handle_after_reuse() {
+        let mut w = test_world();
+        let old = w.create_node(Transform::default(), None);
+        w.remove_node(old);
+        // Allocate a new node, which should reuse the slot with bumped generation
+        let new = w.create_node(Transform::default(), None);
+        assert_eq!(old.index, new.index);
+        assert_ne!(old.generation, new.generation);
+        // Old handle must be invalid
+        assert!(!w.is_valid(old));
+        assert!(w.is_valid(new));
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_false() {
+        let mut w = test_world();
+        let fake = NodeId {
+            index: 99,
+            generation: 0,
+        };
+        assert!(!w.remove_node(fake));
+    }
+
+    // ── Parent-child relationships ────────────────────────────────
+
+    #[test]
+    fn create_with_parent() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::default(), None);
+        let child = w.create_node(Transform::default(), Some(parent));
+        let parent_node = w.get_node(parent).unwrap();
+        assert_eq!(parent_node.first_child, Some(child));
+    }
+
+    #[test]
+    fn reparent_node() {
+        let mut w = test_world();
+        let a = w.create_node(Transform::default(), None);
+        let b = w.create_node(Transform::default(), None);
+        let child = w.create_node(Transform::default(), Some(a));
+
+        // Child is under a
+        assert_eq!(w.get_node(a).unwrap().first_child, Some(child));
+
+        // Reparent to b
+        assert!(w.set_parent(child, Some(b)));
+        assert!(w.get_node(a).unwrap().first_child.is_none());
+        assert_eq!(w.get_node(b).unwrap().first_child, Some(child));
+    }
+
+    #[test]
+    fn reparent_to_none_makes_root() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::default(), None);
+        let child = w.create_node(Transform::default(), Some(parent));
+        assert!(w.set_parent(child, None));
+        assert!(w.get_node(parent).unwrap().first_child.is_none());
+    }
+
+    #[test]
+    fn cycle_prevention() {
+        let mut w = test_world();
+        let a = w.create_node(Transform::default(), None);
+        let b = w.create_node(Transform::default(), Some(a));
+        let c = w.create_node(Transform::default(), Some(b));
+
+        // Trying to make a a child of c should fail (c -> b -> a cycle)
+        assert!(!w.set_parent(a, Some(c)));
+
+        // Trying to make a a child of b should also fail
+        assert!(!w.set_parent(a, Some(b)));
+
+        // Self-parenting should fail
+        assert!(!w.set_parent(a, Some(a)));
+    }
+
+    #[test]
+    fn remove_subtree() {
+        let mut w = test_world();
+        let root = w.create_node(Transform::default(), None);
+        let child = w.create_renderable(model(1), Transform::default(), Some(root));
+        let grandchild = w.create_renderable(model(2), Transform::default(), Some(child));
+
+        w.remove_node(root);
+
+        assert!(!w.is_valid(root));
+        assert!(!w.is_valid(child));
+        assert!(!w.is_valid(grandchild));
+    }
+
+    #[test]
+    fn remove_child_detaches_from_parent() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::default(), None);
+        let c1 = w.create_node(Transform::default(), Some(parent));
+        let c2 = w.create_node(Transform::default(), Some(parent));
+
+        w.remove_node(c1);
+
+        // Parent should still have c2
+        assert!(w.is_valid(parent));
+        assert!(w.is_valid(c2));
+        let parent_node = w.get_node(parent).unwrap();
+        assert_eq!(parent_node.first_child, Some(c2));
+    }
+
+    // ── Transform computation ─────────────────────────────────────
+
+    #[test]
+    fn root_world_matrix_equals_local() {
+        let mut w = test_world();
+        let t = Transform::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let expected = t.to_matrix();
+        let id = w.create_node(t, None);
+        w.update_world_transforms();
+        assert_eq!(w.world_matrix(id).unwrap(), expected);
+    }
+
+    #[test]
+    fn child_inherits_parent_transform() {
+        let mut w = test_world();
+        let parent_t = Transform::from_translation(Vec3::new(10.0, 0.0, 0.0));
+        let child_t = Transform::from_translation(Vec3::new(0.0, 5.0, 0.0));
+
+        let parent = w.create_node(parent_t.clone(), None);
+        let child = w.create_node(child_t.clone(), Some(parent));
+        w.update_world_transforms();
+
+        let expected = parent_t.to_matrix() * child_t.to_matrix();
+        let actual = w.world_matrix(child).unwrap();
+
+        // Check that the child's world position is (10, 5, 0)
+        let pos = actual.col(3);
+        assert!((pos.x - 10.0).abs() < 1e-5);
+        assert!((pos.y - 5.0).abs() < 1e-5);
+        assert!((pos.z - 0.0).abs() < 1e-5);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn grandchild_transform_chain() {
+        let mut w = test_world();
+        let t1 = Transform::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let t2 = Transform::from_translation(Vec3::new(0.0, 2.0, 0.0));
+        let t3 = Transform::from_translation(Vec3::new(0.0, 0.0, 3.0));
+
+        let a = w.create_node(t1.clone(), None);
+        let b = w.create_node(t2.clone(), Some(a));
+        let c = w.create_node(t3.clone(), Some(b));
+        w.update_world_transforms();
+
+        let world_c = w.world_matrix(c).unwrap();
+        let pos = world_c.col(3);
+        assert!((pos.x - 1.0).abs() < 1e-5);
+        assert!((pos.y - 2.0).abs() < 1e-5);
+        assert!((pos.z - 3.0).abs() < 1e-5);
+    }
+
+    // ── Dirty flag propagation ────────────────────────────────────
+
+    #[test]
+    fn moving_parent_updates_children() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::from_translation(Vec3::X), None);
+        let child = w.create_node(Transform::from_translation(Vec3::Y), Some(parent));
+        w.update_world_transforms();
+
+        // Verify initial position
+        let pos = w.world_matrix(child).unwrap().col(3);
+        assert!((pos.x - 1.0).abs() < 1e-5);
+        assert!((pos.y - 1.0).abs() < 1e-5);
+
+        // Move parent
+        w.set_local_transform(parent, Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)));
+        w.update_world_transforms();
+
+        // Child should now be at (5, 1, 0)
+        let pos = w.world_matrix(child).unwrap().col(3);
+        assert!((pos.x - 5.0).abs() < 1e-5);
+        assert!((pos.y - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn set_local_transform_invalid_id() {
+        let mut w = test_world();
+        let fake = NodeId {
+            index: 0,
+            generation: 99,
+        };
+        assert!(!w.set_local_transform(fake, Transform::default()));
+    }
+
+    // ── set_model ─────────────────────────────────────────────────
+
+    #[test]
+    fn attach_model_to_grouping_node() {
+        let mut w = test_world();
+        let id = w.create_node(Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 0);
+
+        w.set_model(id, Some(model(42)));
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 1);
+    }
+
+    #[test]
+    fn detach_model_from_renderable() {
+        let mut w = test_world();
+        let id = w.create_renderable(model(1), Transform::default(), None);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 1);
+
+        w.set_model(id, None);
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 0);
+        // Node still valid, just no longer renderable
+        assert!(w.is_valid(id));
+    }
+
+    // ── Backward-compatible API ───────────────────────────────────
+
+    #[test]
+    fn legacy_add_remove_object() {
+        let mut w = test_world();
+        let id = w.add_object(model(1), Transform::from_translation(Vec3::Z));
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 1);
+        assert!(w.get_object(id).is_some());
+
+        assert!(w.remove_object(id));
+        w.update_world_transforms();
+        assert_eq!(w.num_objects(), 0);
+    }
+
+    #[test]
+    fn legacy_update_transform() {
+        let mut w = test_world();
+        let id = w.add_object(model(1), Transform::from_translation(Vec3::ZERO));
+        w.update_world_transforms();
+
+        let new_t = Transform::from_translation(Vec3::new(7.0, 8.0, 9.0));
+        assert!(w.update_transform(id, new_t));
+        w.update_world_transforms();
+
+        let pos = w.world_matrix(id).unwrap().col(3);
+        assert!((pos.x - 7.0).abs() < 1e-5);
+        assert!((pos.y - 8.0).abs() < 1e-5);
+        assert!((pos.z - 9.0).abs() < 1e-5);
+    }
+
+    // ── Multiple siblings ─────────────────────────────────────────
+
+    #[test]
+    fn multiple_children_all_transform_correctly() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)), None);
+        let c1 = w.create_node(Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)), Some(parent));
+        let c2 = w.create_node(Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)), Some(parent));
+        let c3 = w.create_node(Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)), Some(parent));
+        w.update_world_transforms();
+
+        assert!((w.world_matrix(c1).unwrap().col(3).x - 11.0).abs() < 1e-5);
+        assert!((w.world_matrix(c2).unwrap().col(3).x - 12.0).abs() < 1e-5);
+        assert!((w.world_matrix(c3).unwrap().col(3).x - 13.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn remove_middle_sibling() {
+        let mut w = test_world();
+        let parent = w.create_node(Transform::default(), None);
+        let c1 = w.create_node(Transform::default(), Some(parent));
+        let c2 = w.create_node(Transform::default(), Some(parent));
+        let c3 = w.create_node(Transform::default(), Some(parent));
+
+        w.remove_node(c2);
+
+        assert!(w.is_valid(c1));
+        assert!(!w.is_valid(c2));
+        assert!(w.is_valid(c3));
+
+        // Parent should still link to c1 and c3
+        // (linked list: c3 -> c1 after c2 removed, since prepend order is c3, c2, c1)
+        let mut count = 0;
+        let mut cur = w.get_node(parent).unwrap().first_child;
+        while let Some(c) = cur {
+            count += 1;
+            cur = w.get_node(c).unwrap().next_sibling;
+        }
+        assert_eq!(count, 2);
+    }
+
+    // ── Scale and rotation ────────────────────────────────────────
+
+    #[test]
+    fn scaled_parent_affects_child_position() {
+        let mut w = test_world();
+        let parent_t = Transform {
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(2.0),
+        };
+        let child_t = Transform::from_translation(Vec3::new(1.0, 0.0, 0.0));
+
+        let parent = w.create_node(parent_t, None);
+        let child = w.create_node(child_t, Some(parent));
+        w.update_world_transforms();
+
+        // Child at local (1,0,0) under 2x scale parent should be at world (2,0,0)
+        let pos = w.world_matrix(child).unwrap().col(3);
+        assert!((pos.x - 2.0).abs() < 1e-5);
+    }
+
+    // ── Reparent updates transforms ───────────────────────────────
+
+    #[test]
+    fn reparent_recomputes_world_matrix() {
+        let mut w = test_world();
+        let a = w.create_node(Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)), None);
+        let b = w.create_node(Transform::from_translation(Vec3::new(20.0, 0.0, 0.0)), None);
+        let child = w.create_node(Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)), Some(a));
+        w.update_world_transforms();
+
+        // Under a: world x = 11
+        assert!((w.world_matrix(child).unwrap().col(3).x - 11.0).abs() < 1e-5);
+
+        // Reparent to b
+        w.set_parent(child, Some(b));
+        w.update_world_transforms();
+
+        // Under b: world x = 21
+        assert!((w.world_matrix(child).unwrap().col(3).x - 21.0).abs() < 1e-5);
+    }
+
+    // ── Edge case: empty world ────────────────────────────────────
+
+    #[test]
+    fn empty_world_update_is_safe() {
+        let mut w = test_world();
+        w.update_world_transforms();
+        assert_eq!(w.renderables().len(), 0);
+    }
+
+    #[test]
+    fn world_matrix_invalid_id_returns_none() {
+        let w = test_world();
+        let fake = NodeId {
+            index: 0,
+            generation: 0,
+        };
+        assert!(w.world_matrix(fake).is_none());
+    }
+}
