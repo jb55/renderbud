@@ -114,6 +114,7 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     skybox_pipeline: wgpu::RenderPipeline,
+    grid_pipeline: wgpu::RenderPipeline,
 
     world: World,
     arcball: camera::ArcballController,
@@ -443,7 +444,7 @@ impl Renderer {
             device,
             queue,
             &ibl_bgl,
-            include_bytes!("../assets/kloofendal_43d_clear_1k.hdr"),
+            include_bytes!("../assets/venice_sunset_1k.hdr"),
         )
         .expect("failed to load HDR environment map");
 
@@ -546,6 +547,53 @@ impl Renderer {
             multiview: None,
         });
 
+        // Grid pipeline (infinite ground plane)
+        let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("grid_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("grid.wgsl").into()),
+        });
+
+        let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("grid_pipeline_layout"),
+            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grid_pipeline"),
+            cache: None,
+            layout: Some(&grid_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &grid_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &grid_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         let (depth_tex, depth_view) = create_depth(device, width, height);
 
         /* TODO: move to example
@@ -572,6 +620,7 @@ impl Renderer {
             size,
             pipeline,
             skybox_pipeline,
+            grid_pipeline,
             globals,
             object_buf,
             material,
@@ -759,7 +808,15 @@ impl Renderer {
         rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
         rpass.draw(0..3, 0..1);
 
-        // 2. Draw all scene objects
+        // 2. Draw ground grid (alpha-blended over skybox, writes depth)
+        rpass.set_pipeline(&self.grid_pipeline);
+        rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
+        rpass.set_bind_group(1, &self.object_buf.bindgroup, &[0]);
+        rpass.set_bind_group(2, &self.material.bindgroup, &[]);
+        rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
+        rpass.draw(0..3, 0..1);
+
+        // 3. Draw all scene objects
         rpass.set_pipeline(&self.pipeline);
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
         rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
