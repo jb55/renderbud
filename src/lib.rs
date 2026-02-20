@@ -935,8 +935,7 @@ impl Renderer {
 
     /// Switch to fly camera mode.
     pub fn set_fly_mode(&mut self) {
-        self.camera_mode =
-            CameraMode::Fly(camera::FlyController::from_camera(&self.world.camera));
+        self.camera_mode = CameraMode::Fly(camera::FlyController::from_camera(&self.world.camera));
     }
 
     /// Get the avatar position (None if not in third-person mode).

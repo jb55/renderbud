@@ -711,7 +711,10 @@ mod tests {
         assert!((pos.y - 1.0).abs() < 1e-5);
 
         // Move parent
-        w.set_local_transform(parent, Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)));
+        w.set_local_transform(
+            parent,
+            Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+        );
         w.update_world_transforms();
 
         // Child should now be at (5, 1, 0)
@@ -795,9 +798,18 @@ mod tests {
     fn multiple_children_all_transform_correctly() {
         let mut w = test_world();
         let parent = w.create_node(Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)), None);
-        let c1 = w.create_node(Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)), Some(parent));
-        let c2 = w.create_node(Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)), Some(parent));
-        let c3 = w.create_node(Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)), Some(parent));
+        let c1 = w.create_node(
+            Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            Some(parent),
+        );
+        let c2 = w.create_node(
+            Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+            Some(parent),
+        );
+        let c3 = w.create_node(
+            Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)),
+            Some(parent),
+        );
         w.update_world_transforms();
 
         assert!((w.world_matrix(c1).unwrap().col(3).x - 11.0).abs() < 1e-5);
@@ -858,7 +870,10 @@ mod tests {
         let mut w = test_world();
         let a = w.create_node(Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)), None);
         let b = w.create_node(Transform::from_translation(Vec3::new(20.0, 0.0, 0.0)), None);
-        let child = w.create_node(Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)), Some(a));
+        let child = w.create_node(
+            Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            Some(a),
+        );
         w.update_world_transforms();
 
         // Under a: world x = 11
