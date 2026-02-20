@@ -89,6 +89,88 @@ impl ArcballController {
     }
 }
 
+/// FPS-style fly camera controller for free movement through the scene.
+#[derive(Debug, Clone)]
+pub struct FlyController {
+    pub position: Vec3,
+    pub yaw: f32,   // radians, around Y axis
+    pub pitch: f32, // radians, up/down
+    pub speed: f32,
+    pub sensitivity: f32,
+}
+
+impl Default for FlyController {
+    fn default() -> Self {
+        Self {
+            position: Vec3::new(0.0, 2.0, 5.0),
+            yaw: 0.0,
+            pitch: 0.0,
+            speed: 5.0,
+            sensitivity: 0.003,
+        }
+    }
+}
+
+impl FlyController {
+    /// Initialize from an existing camera.
+    pub fn from_camera(camera: &Camera) -> Self {
+        let dir = (camera.target - camera.eye).normalize();
+        let yaw = dir.x.atan2(dir.z);
+        let pitch = dir.y.asin();
+
+        Self {
+            position: camera.eye,
+            yaw,
+            pitch,
+            ..Default::default()
+        }
+    }
+
+    /// Handle mouse movement for looking around.
+    pub fn on_mouse_look(&mut self, delta_x: f32, delta_y: f32) {
+        self.yaw -= delta_x * self.sensitivity;
+        self.pitch -= delta_y * self.sensitivity;
+
+        let limit = std::f32::consts::FRAC_PI_2 - 0.01;
+        self.pitch = self.pitch.clamp(-limit, limit);
+    }
+
+    /// Forward direction (horizontal plane + pitch).
+    pub fn forward(&self) -> Vec3 {
+        Vec3::new(
+            self.pitch.cos() * self.yaw.sin(),
+            self.pitch.sin(),
+            self.pitch.cos() * self.yaw.cos(),
+        )
+        .normalize()
+    }
+
+    /// Right direction (always horizontal).
+    pub fn right(&self) -> Vec3 {
+        Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin()).normalize()
+    }
+
+    /// Move the camera. forward/right/up are signed: positive = forward/right/up.
+    pub fn process_movement(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
+        let velocity = self.speed * dt;
+        self.position += self.forward() * forward * velocity;
+        self.position += self.right() * right * velocity;
+        self.position += Vec3::Y * up * velocity;
+    }
+
+    /// Adjust speed with scroll wheel.
+    pub fn on_scroll(&mut self, delta: f32) {
+        self.speed *= 1.0 + delta * 0.1;
+        self.speed = self.speed.clamp(0.5, 100.0);
+    }
+
+    /// Update a camera with the current fly state.
+    pub fn update_camera(&self, camera: &mut Camera) {
+        camera.eye = self.position;
+        camera.target = self.position + self.forward();
+    }
+}
+
 impl Camera {
     pub fn new(eye: Vec3, target: Vec3) -> Self {
         Self {

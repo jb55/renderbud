@@ -16,7 +16,7 @@ mod world;
 #[cfg(feature = "egui")]
 pub mod egui;
 
-pub use camera::{ArcballController, Camera};
+pub use camera::{ArcballController, Camera, FlyController};
 pub use model::{Aabb, Model};
 pub use world::{ObjectId, Transform, World};
 
@@ -128,7 +128,7 @@ pub struct Renderer {
     shadow_globals_bg: wgpu::BindGroup,
 
     world: World,
-    arcball: camera::ArcballController,
+    fly: camera::FlyController,
 
     globals: GpuData<Globals>,
     globals_bgl: wgpu::BindGroupLayout,
@@ -427,14 +427,19 @@ impl Renderbud {
         self.renderer.size
     }
 
-    /// Handle mouse drag for arcball rotation.
+    /// Handle mouse drag for camera look.
     pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.renderer.on_mouse_drag(delta_x, delta_y);
     }
 
-    /// Handle scroll for arcball zoom.
+    /// Handle scroll for camera speed adjustment.
     pub fn on_scroll(&mut self, delta: f32) {
         self.renderer.on_scroll(delta);
+    }
+
+    /// Move the camera. forward/right/up are signed: positive = forward/right/up.
+    pub fn process_movement(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
+        self.renderer.process_movement(forward, right, up, dt);
     }
 
     pub fn load_gltf_model(
@@ -747,11 +752,11 @@ impl Renderer {
 
         let world = World::new(camera);
 
-        let arcball = camera::ArcballController::from_camera(&world.camera);
+        let fly = camera::FlyController::from_camera(&world.camera);
 
         Self {
             world,
-            arcball,
+            fly,
             target_size: size,
             model_ids,
             size,
@@ -860,8 +865,8 @@ impl Renderer {
             1.2,
         );
 
-        // Sync arcball to new camera position
-        self.arcball = camera::ArcballController::from_camera(&self.world.camera);
+        // Sync fly controller to new camera position
+        self.fly = camera::FlyController::from_camera(&self.world.camera);
 
         self.globals.data.set_camera(w, h, &self.world.camera);
     }
@@ -871,21 +876,26 @@ impl Renderer {
         self.models.get(&model).map(|md| md.bounds)
     }
 
-    /// Handle mouse drag for arcball rotation.
+    /// Handle mouse drag for camera look.
     pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
-        self.arcball.on_drag(delta_x, delta_y);
+        self.fly.on_mouse_look(delta_x, delta_y);
     }
 
-    /// Handle scroll for arcball zoom.
+    /// Handle scroll for camera speed adjustment.
     pub fn on_scroll(&mut self, delta: f32) {
-        self.arcball.on_scroll(delta);
+        self.fly.on_scroll(delta);
+    }
+
+    /// Move the camera. forward/right/up are signed: positive = forward/right/up.
+    pub fn process_movement(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
+        self.fly.process_movement(forward, right, up, dt);
     }
 
     pub fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
-        // Update camera from arcball controller
-        self.arcball.update_camera(&mut self.world.camera);
+        // Update camera from fly controller
+        self.fly.update_camera(&mut self.world.camera);
         let (w, h) = self.size;
         self.globals
             .data
