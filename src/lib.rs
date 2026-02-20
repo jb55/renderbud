@@ -18,7 +18,7 @@ pub mod egui;
 
 pub use camera::{ArcballController, Camera, FlyController};
 pub use model::{Aabb, Model};
-pub use world::{ObjectId, Transform, World};
+pub use world::{Node, NodeId, ObjectId, Transform, World};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
@@ -904,6 +904,9 @@ impl Renderer {
         //let t = self.globals_mut().time * 0.3;
         //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);
 
+        // Recompute dirty world transforms before rendering
+        self.world.update_world_transforms();
+
         // Compute light space matrix for shadow mapping
         let light_dir = self.globals.data.light_dir.normalize();
         let light_pos = -light_dir * 30.0; // Position light 30m back along its direction
@@ -917,9 +920,9 @@ impl Renderer {
         write_gpu_data(queue, &self.globals);
 
         // Write per-object transforms into the dynamic buffer
-        for (i, (_id, scene_obj)) in self.world.objects().iter().enumerate() {
-            let model_mat = scene_obj.transform.to_matrix();
-            let obj_uniform = ObjectUniform::from_model(model_mat);
+        for (i, &node_id) in self.world.renderables().iter().enumerate() {
+            let node = self.world.get_node(node_id).unwrap();
+            let obj_uniform = ObjectUniform::from_model(node.world_matrix());
             let offset = i as u64 * self.object_buf.stride;
             queue.write_buffer(
                 &self.object_buf.buffer,
@@ -950,8 +953,10 @@ impl Renderer {
         shadow_pass.set_pipeline(&self.shadow_pipeline);
         shadow_pass.set_bind_group(0, &self.shadow_globals_bg, &[]);
 
-        for (i, (_id, scene_obj)) in self.world.objects().iter().enumerate() {
-            let Some(model_data) = self.models.get(&scene_obj.model) else {
+        for (i, &node_id) in self.world.renderables().iter().enumerate() {
+            let node = self.world.get_node(node_id).unwrap();
+            let model_handle = node.model.unwrap();
+            let Some(model_data) = self.models.get(&model_handle) else {
                 continue;
             };
             let dynamic_offset = (i as u64 * self.object_buf.stride) as u32;
@@ -1021,8 +1026,10 @@ impl Renderer {
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
         rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
 
-        for (i, (_id, scene_obj)) in self.world.objects().iter().enumerate() {
-            let Some(model_data) = self.models.get(&scene_obj.model) else {
+        for (i, &node_id) in self.world.renderables().iter().enumerate() {
+            let node = self.world.get_node(node_id).unwrap();
+            let model_handle = node.model.unwrap();
+            let Some(model_data) = self.models.get(&model_handle) else {
                 continue;
             };
 
