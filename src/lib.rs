@@ -16,9 +16,15 @@ mod world;
 #[cfg(feature = "egui")]
 pub mod egui;
 
-pub use camera::{ArcballController, Camera, FlyController};
+pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController};
 pub use model::{Aabb, Model};
 pub use world::{Node, NodeId, ObjectId, Transform, World};
+
+/// Active camera controller mode.
+pub enum CameraMode {
+    Fly(camera::FlyController),
+    ThirdPerson(camera::ThirdPersonController),
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
@@ -128,7 +134,7 @@ pub struct Renderer {
     shadow_globals_bg: wgpu::BindGroup,
 
     world: World,
-    fly: camera::FlyController,
+    camera_mode: CameraMode,
 
     globals: GpuData<Globals>,
     globals_bgl: wgpu::BindGroupLayout,
@@ -427,19 +433,39 @@ impl Renderbud {
         self.renderer.size
     }
 
-    /// Handle mouse drag for camera look.
+    /// Handle mouse drag for camera look/orbit.
     pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.renderer.on_mouse_drag(delta_x, delta_y);
     }
 
-    /// Handle scroll for camera speed adjustment.
+    /// Handle scroll for camera speed/zoom.
     pub fn on_scroll(&mut self, delta: f32) {
         self.renderer.on_scroll(delta);
     }
 
-    /// Move the camera. forward/right/up are signed: positive = forward/right/up.
+    /// Move the camera or avatar. forward/right/up are signed.
     pub fn process_movement(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
         self.renderer.process_movement(forward, right, up, dt);
+    }
+
+    /// Switch to third-person camera mode.
+    pub fn set_third_person_mode(&mut self, avatar_position: Vec3) {
+        self.renderer.set_third_person_mode(avatar_position);
+    }
+
+    /// Switch to fly camera mode.
+    pub fn set_fly_mode(&mut self) {
+        self.renderer.set_fly_mode();
+    }
+
+    /// Get the avatar position (None if not in third-person mode).
+    pub fn avatar_position(&self) -> Option<Vec3> {
+        self.renderer.avatar_position()
+    }
+
+    /// Get the avatar yaw (None if not in third-person mode).
+    pub fn avatar_yaw(&self) -> Option<f32> {
+        self.renderer.avatar_yaw()
     }
 
     pub fn load_gltf_model(
@@ -752,11 +778,11 @@ impl Renderer {
 
         let world = World::new(camera);
 
-        let fly = camera::FlyController::from_camera(&world.camera);
+        let camera_mode = CameraMode::Fly(camera::FlyController::from_camera(&world.camera));
 
         Self {
             world,
-            fly,
+            camera_mode,
             target_size: size,
             model_ids,
             size,
@@ -865,8 +891,8 @@ impl Renderer {
             1.2,
         );
 
-        // Sync fly controller to new camera position
-        self.fly = camera::FlyController::from_camera(&self.world.camera);
+        // Sync controller to new camera position
+        self.camera_mode = CameraMode::Fly(camera::FlyController::from_camera(&self.world.camera));
 
         self.globals.data.set_camera(w, h, &self.world.camera);
     }
@@ -876,26 +902,67 @@ impl Renderer {
         self.models.get(&model).map(|md| md.bounds)
     }
 
-    /// Handle mouse drag for camera look.
+    /// Handle mouse drag for camera look/orbit.
     pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
-        self.fly.on_mouse_look(delta_x, delta_y);
+        match &mut self.camera_mode {
+            CameraMode::Fly(fly) => fly.on_mouse_look(delta_x, delta_y),
+            CameraMode::ThirdPerson(tp) => tp.on_mouse_look(delta_x, delta_y),
+        }
     }
 
-    /// Handle scroll for camera speed adjustment.
+    /// Handle scroll for camera speed/zoom.
     pub fn on_scroll(&mut self, delta: f32) {
-        self.fly.on_scroll(delta);
+        match &mut self.camera_mode {
+            CameraMode::Fly(fly) => fly.on_scroll(delta),
+            CameraMode::ThirdPerson(tp) => tp.on_scroll(delta),
+        }
     }
 
-    /// Move the camera. forward/right/up are signed: positive = forward/right/up.
+    /// Move the camera or avatar. forward/right/up are signed.
     pub fn process_movement(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
-        self.fly.process_movement(forward, right, up, dt);
+        match &mut self.camera_mode {
+            CameraMode::Fly(fly) => fly.process_movement(forward, right, up, dt),
+            CameraMode::ThirdPerson(tp) => tp.process_movement(forward, right, up, dt),
+        }
+    }
+
+    /// Switch to third-person camera mode with avatar at the given position.
+    pub fn set_third_person_mode(&mut self, avatar_position: Vec3) {
+        let mut tp = camera::ThirdPersonController::from_camera(&self.world.camera);
+        tp.avatar_position = avatar_position;
+        self.camera_mode = CameraMode::ThirdPerson(tp);
+    }
+
+    /// Switch to fly camera mode.
+    pub fn set_fly_mode(&mut self) {
+        self.camera_mode =
+            CameraMode::Fly(camera::FlyController::from_camera(&self.world.camera));
+    }
+
+    /// Get the avatar position (None if not in third-person mode).
+    pub fn avatar_position(&self) -> Option<Vec3> {
+        match &self.camera_mode {
+            CameraMode::ThirdPerson(tp) => Some(tp.avatar_position),
+            _ => None,
+        }
+    }
+
+    /// Get the avatar yaw (None if not in third-person mode).
+    pub fn avatar_yaw(&self) -> Option<f32> {
+        match &self.camera_mode {
+            CameraMode::ThirdPerson(tp) => Some(tp.avatar_yaw),
+            _ => None,
+        }
     }
 
     pub fn update(&mut self) {
         self.globals_mut().time = self.start.elapsed().as_secs_f32();
 
-        // Update camera from fly controller
-        self.fly.update_camera(&mut self.world.camera);
+        // Update camera from active controller
+        match &self.camera_mode {
+            CameraMode::Fly(fly) => fly.update_camera(&mut self.world.camera),
+            CameraMode::ThirdPerson(tp) => tp.update_camera(&mut self.world.camera),
+        }
         let (w, h) = self.size;
         self.globals
             .data
