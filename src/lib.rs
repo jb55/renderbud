@@ -4,6 +4,7 @@ use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::ModelData;
 use crate::model::Vertex;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 
 mod camera;
 mod ibl;
@@ -16,8 +17,8 @@ mod world;
 pub mod egui;
 
 pub use camera::{ArcballController, Camera};
-pub use model::Model;
-pub use world::World;
+pub use model::{Aabb, Model};
+pub use world::{ObjectId, Transform, World};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::NoUninit, bytemuck::Zeroable)]
@@ -33,6 +34,14 @@ impl ObjectUniform {
             normal: model.inverse().transpose(),
         }
     }
+}
+
+const MAX_SCENE_OBJECTS: usize = 256;
+
+struct DynamicObjectBuffer {
+    buffer: wgpu::Buffer,
+    bindgroup: wgpu::BindGroup,
+    stride: u64,
 }
 
 #[repr(C)]
@@ -110,7 +119,7 @@ pub struct Renderer {
     arcball: camera::ArcballController,
 
     globals: GpuData<Globals>,
-    object: GpuData<ObjectUniform>,
+    object_buf: DynamicObjectBuffer,
     material: GpuData<MaterialUniform>,
 
     material_bgl: wgpu::BindGroupLayout,
@@ -191,10 +200,18 @@ fn make_global_gpudata(
     )
 }
 
-fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::BindGroupLayout) {
-    let object_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("object"),
-        size: std::mem::size_of::<ObjectUniform>() as u64,
+fn make_dynamic_object_buffer(
+    device: &wgpu::Device,
+) -> (DynamicObjectBuffer, wgpu::BindGroupLayout) {
+    // Alignment for dynamic uniform buffer offsets (typically 256)
+    let align = device.limits().min_uniform_buffer_offset_alignment as u64;
+    let obj_size = std::mem::size_of::<ObjectUniform>() as u64;
+    let stride = ((obj_size + align - 1) / align) * align;
+    let total_size = stride * MAX_SCENE_OBJECTS as u64;
+
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("object_dynamic"),
+        size: total_size,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -206,27 +223,31 @@ fn make_object_gpudata(device: &wgpu::Device) -> (GpuData<ObjectUniform>, wgpu::
             visibility: wgpu::ShaderStages::VERTEX,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+                has_dynamic_offset: true,
+                min_binding_size: NonZeroU64::new(obj_size),
             },
             count: None,
         }],
     });
 
-    let object_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("object_bg"),
+    let bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("object_dynamic_bg"),
         layout: &object_bgl,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
-            resource: object_buf.as_entire_binding(),
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: NonZeroU64::new(obj_size),
+            }),
         }],
     });
 
     (
-        GpuData::<ObjectUniform> {
-            data: ObjectUniform::from_model(Mat4::IDENTITY),
-            buffer: object_buf,
-            bindgroup: object_bg,
+        DynamicObjectBuffer {
+            buffer,
+            bindgroup,
+            stride,
         },
         object_bgl,
     )
@@ -364,6 +385,18 @@ impl Renderbud {
             .load_gltf_model(&self.device, &self.queue, path)
     }
 
+    pub fn place_object(&mut self, model: Model, transform: Transform) -> ObjectId {
+        self.renderer.place_object(model, transform)
+    }
+
+    pub fn remove_object(&mut self, id: ObjectId) -> bool {
+        self.renderer.remove_object(id)
+    }
+
+    pub fn update_object_transform(&mut self, id: ObjectId, transform: Transform) -> bool {
+        self.renderer.update_object_transform(id, transform)
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
@@ -402,13 +435,17 @@ impl Renderer {
 
         let (globals, globals_bgl) =
             make_global_gpudata(device, width as f32, height as f32, &camera);
-        let (object, object_bgl) = make_object_gpudata(device);
+        let (object_buf, object_bgl) = make_dynamic_object_buffer(device);
         let (material, material_bgl) = make_material_gpudata(device, queue);
 
         let ibl_bgl = ibl::create_ibl_bind_group_layout(device);
-        let ibl = ibl::load_hdr_ibl(device, queue, &ibl_bgl, "assets/venice_sunset_1k.hdr")
-        //let ibl = ibl::load_hdr_ibl(device, queue, &ibl_bgl, "assets/kloofendal_43d_clear_1k.hdr")
-            .expect("failed to load HDR environment map");
+        let ibl = ibl::load_hdr_ibl_from_bytes(
+            device,
+            queue,
+            &ibl_bgl,
+            include_bytes!("../assets/kloofendal_43d_clear_1k.hdr"),
+        )
+        .expect("failed to load HDR environment map");
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
@@ -467,11 +504,12 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("skybox.wgsl").into()),
         });
 
-        let skybox_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("skybox_pipeline_layout"),
-            bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
-            push_constant_ranges: &[],
-        });
+        let skybox_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("skybox_pipeline_layout"),
+                bind_group_layouts: &[&globals_bgl, &object_bgl, &material_bgl, &ibl_bgl],
+                push_constant_ranges: &[],
+            });
 
         let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("skybox_pipeline"),
@@ -522,10 +560,7 @@ impl Renderer {
 
         let model_ids = 0;
 
-        let world = World {
-            camera,
-            selected_model: None,
-        };
+        let world = World::new(camera);
 
         let arcball = camera::ArcballController::from_camera(&world.camera);
 
@@ -538,7 +573,7 @@ impl Renderer {
             pipeline,
             skybox_pipeline,
             globals,
-            object,
+            object_buf,
             material,
             material_bgl,
             ibl,
@@ -557,6 +592,8 @@ impl Renderer {
         &mut self.globals.data
     }
 
+    /// Load a glTF model from disk. Returns a handle that can be placed in
+    /// the scene with [`place_object`].
     pub fn load_gltf_model(
         &mut self,
         device: &wgpu::Device,
@@ -570,14 +607,22 @@ impl Renderer {
 
         self.models.insert(id, model_data);
 
-        // TODO(jb55): we probably want to separate these
-        // pick it
-        self.world.selected_model = Some(id);
-
-        // point camera at it
-        self.focus_model(id);
-
         Ok(id)
+    }
+
+    /// Place a loaded model in the scene with the given transform.
+    pub fn place_object(&mut self, model: Model, transform: Transform) -> ObjectId {
+        self.world.add_object(model, transform)
+    }
+
+    /// Remove an object from the scene.
+    pub fn remove_object(&mut self, id: ObjectId) -> bool {
+        self.world.remove_object(id)
+    }
+
+    /// Update the transform of a placed object.
+    pub fn update_object_transform(&mut self, id: ObjectId, transform: Transform) -> bool {
+        self.world.update_transform(id, transform)
     }
 
     /// Perform a resize if the target size is not the same as size
@@ -629,6 +674,11 @@ impl Renderer {
         self.globals.data.set_camera(w, h, &self.world.camera);
     }
 
+    /// Get the axis-aligned bounding box for a loaded model.
+    pub fn model_bounds(&self, model: Model) -> Option<Aabb> {
+        self.models.get(&model).map(|md| md.bounds)
+    }
+
     /// Handle mouse drag for arcball rotation.
     pub fn on_mouse_drag(&mut self, delta_x: f32, delta_y: f32) {
         self.arcball.on_drag(delta_x, delta_y);
@@ -645,7 +695,9 @@ impl Renderer {
         // Update camera from arcball controller
         self.arcball.update_camera(&mut self.world.camera);
         let (w, h) = self.size;
-        self.globals.data.set_camera(w as f32, h as f32, &self.world.camera);
+        self.globals
+            .data
+            .set_camera(w as f32, h as f32, &self.world.camera);
 
         //let t = self.globals_mut().time * 0.3;
         //self.globals_mut().light_dir = Vec3::new(t_slow.cos() * 0.6, 0.7, t_slow.sin() * 0.6);
@@ -653,8 +705,18 @@ impl Renderer {
 
     pub fn prepare(&self, queue: &wgpu::Queue) {
         write_gpu_data(queue, &self.globals);
-        write_gpu_data(queue, &self.object);
-        write_gpu_data(queue, &self.material);
+
+        // Write per-object transforms into the dynamic buffer
+        for (i, (_id, scene_obj)) in self.world.objects().iter().enumerate() {
+            let model_mat = scene_obj.transform.to_matrix();
+            let obj_uniform = ObjectUniform::from_model(model_mat);
+            let offset = i as u64 * self.object_buf.stride;
+            queue.write_buffer(
+                &self.object_buf.buffer,
+                offset,
+                bytemuck::bytes_of(&obj_uniform),
+            );
+        }
     }
 
     pub fn render(&self, frame: &wgpu::TextureView, encoder: &mut wgpu::CommandEncoder) {
@@ -692,30 +754,30 @@ impl Renderer {
         // 1. Draw skybox first (writes depth=1.0)
         rpass.set_pipeline(&self.skybox_pipeline);
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
-        rpass.set_bind_group(1, &self.object.bindgroup, &[]); // unused but required by layout
+        rpass.set_bind_group(1, &self.object_buf.bindgroup, &[0]); // dynamic offset 0
         rpass.set_bind_group(2, &self.material.bindgroup, &[]); // unused but required by layout
         rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
         rpass.draw(0..3, 0..1);
 
-        // 2. Draw geometry (uses depth_compare: Less, so renders on top of skybox)
-        let Some(model) = self.world.selected_model else {
-            return;
-        };
-
-        let Some(model) = self.models.get(&model) else {
-            return;
-        };
-
+        // 2. Draw all scene objects
         rpass.set_pipeline(&self.pipeline);
         rpass.set_bind_group(0, &self.globals.bindgroup, &[]);
-        rpass.set_bind_group(1, &self.object.bindgroup, &[]);
         rpass.set_bind_group(3, &self.ibl.bindgroup, &[]);
 
-        for d in &model.draws {
-            rpass.set_bind_group(2, &model.materials[d.material_index].bindgroup, &[]);
-            rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-            rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+        for (i, (_id, scene_obj)) in self.world.objects().iter().enumerate() {
+            let Some(model_data) = self.models.get(&scene_obj.model) else {
+                continue;
+            };
+
+            let dynamic_offset = (i as u64 * self.object_buf.stride) as u32;
+            rpass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
+
+            for d in &model_data.draws {
+                rpass.set_bind_group(2, &model_data.materials[d.material_index].bindgroup, &[]);
+                rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+            }
         }
     }
 }

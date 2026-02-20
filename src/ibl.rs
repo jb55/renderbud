@@ -145,11 +145,11 @@ fn create_gradient_cubemap(
     // Face order: +X, -X, +Y, -Y, +Z, -Z
     // HDR values - will be tonemapped in shader
     let face_colors: [[f32; 3]; 6] = [
-        [0.4, 0.38, 0.35], // +X (right) - warm neutral
-        [0.35, 0.38, 0.4], // -X (left) - cool neutral
-        [0.5, 0.6, 0.8],   // +Y (up/sky) - blue sky
-        [0.25, 0.2, 0.15], // -Y (down/ground) - brown ground
-        [0.4, 0.4, 0.4],   // +Z (front) - neutral
+        [0.4, 0.38, 0.35],  // +X (right) - warm neutral
+        [0.35, 0.38, 0.4],  // -X (left) - cool neutral
+        [0.5, 0.6, 0.8],    // +Y (up/sky) - blue sky
+        [0.25, 0.2, 0.15],  // -Y (down/ground) - brown ground
+        [0.4, 0.4, 0.4],    // +Z (front) - neutral
         [0.38, 0.38, 0.42], // -Z (back) - slightly cool
     ];
 
@@ -308,6 +308,26 @@ pub fn load_hdr_ibl(
     path: impl AsRef<Path>,
 ) -> Result<IblData, image::ImageError> {
     let img = image::open(path)?.into_rgb32f();
+    load_hdr_ibl_from_image(device, queue, layout, img)
+}
+
+/// Load an HDR environment map from raw bytes (e.g. from `include_bytes!`).
+pub fn load_hdr_ibl_from_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    bytes: &[u8],
+) -> Result<IblData, image::ImageError> {
+    let img = image::load_from_memory(bytes)?.into_rgb32f();
+    load_hdr_ibl_from_image(device, queue, layout, img)
+}
+
+fn load_hdr_ibl_from_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    img: image::Rgb32FImage,
+) -> Result<IblData, image::ImageError> {
     let width = img.width();
     let height = img.height();
     let pixels: Vec<_> = img.pixels().cloned().collect();
@@ -434,7 +454,11 @@ fn equirect_to_irradiance_cubemap(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: face },
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             &data,
@@ -496,11 +520,7 @@ fn convolve_irradiance(
             let sin_phi = phi.sin();
             let cos_phi = phi.cos();
 
-            let tangent_sample = [
-                sin_theta * cos_phi,
-                sin_theta * sin_phi,
-                cos_theta,
-            ];
+            let tangent_sample = [sin_theta * cos_phi, sin_theta * sin_phi, cos_theta];
 
             // Transform to world space
             let sample_dir = [
@@ -822,7 +842,11 @@ fn generate_prefiltered_cubemap(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: mip,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: face },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: face,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 &data,

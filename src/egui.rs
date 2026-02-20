@@ -1,13 +1,16 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::Model;
 use crate::Renderer;
 
 #[derive(Clone)]
 pub struct EguiRenderer {
     pub renderer: Arc<Mutex<Renderer>>,
 }
+
+/// Marker type for the egui paint callback that renders the full scene.
+#[derive(Copy, Clone)]
+pub struct SceneRender;
 
 #[cfg(feature = "egui")]
 impl EguiRenderer {
@@ -26,10 +29,8 @@ impl EguiRenderer {
     }
 }
 
-// TODO(jb55): eventually this should be just a generic renderable handle
-// instead of hardcoding it to model
 #[cfg(feature = "egui")]
-impl egui_wgpu::CallbackTrait for Model {
+impl egui_wgpu::CallbackTrait for SceneRender {
     fn prepare(
         &self,
         device: &wgpu::Device,
@@ -43,6 +44,7 @@ impl egui_wgpu::CallbackTrait for Model {
         let mut renderer = egui_renderer.renderer.lock().unwrap();
 
         renderer.resize(device);
+        renderer.update();
         renderer.prepare(queue);
 
         Vec::with_capacity(0)
@@ -60,6 +62,6 @@ impl egui_wgpu::CallbackTrait for Model {
             .renderer
             .lock()
             .unwrap()
-            .render_pass(render_pass, *self)
+            .render_pass(render_pass)
     }
 }

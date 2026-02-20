@@ -32,7 +32,7 @@ pub struct ModelData {
 }
 
 /// A model handle
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone)]
 pub struct Model {
     pub id: u64,
 }

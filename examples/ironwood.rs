@@ -34,6 +34,8 @@ impl ApplicationHandler for App {
         // pick a path relative to crate root
         //let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/assets/ironwood.glb");
         let model_path = std::path::Path::new("/home/jb55/var/models/WaterBottle.glb");
+        //let model_path = std::path::Path::new("/home/jb55/dev/github/KhronosGroup/glTF-Sample-Assets/Models/FlightHelmet/glTF/FlightHelmet.gltf");
+        //let model_path = std::path::Path::new("/home/jb55/var/models/acnh-scuba.glb");
         //let model_path = std::path::Path::new("/home/jb55/var/models/ABeautifulGame.glb");
         renderbud.load_gltf_model(model_path).unwrap();
 
