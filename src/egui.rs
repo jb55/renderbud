@@ -47,7 +47,13 @@ impl egui_wgpu::CallbackTrait for SceneRender {
         renderer.update();
         renderer.prepare(queue);
 
-        Vec::with_capacity(0)
+        // Render shadow depth pass into a separate command buffer
+        // that executes before the main egui render pass.
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.render_shadow(&mut encoder);
+
+        vec![encoder.finish()]
     }
 
     fn paint(

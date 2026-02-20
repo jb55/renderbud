@@ -20,9 +20,12 @@ struct Globals {
 
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
 struct VSOut {
     @builtin(position) clip: vec4<f32>,
@@ -58,6 +61,29 @@ fn grid_line(coord: vec2<f32>, spacing: f32, line_width: f32) -> f32 {
     let width = dxz * line_width;
     let line = smoothstep(width, vec2<f32>(0.0), grid);
     return max(line.x, line.y);
+}
+
+fn calc_shadow(world_pos: vec3<f32>) -> f32 {
+    let light_clip = globals.light_view_proj * vec4<f32>(world_pos, 1.0);
+    let ndc = light_clip.xyz / light_clip.w;
+    let shadow_uv = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
+
+    if shadow_uv.x < 0.0 || shadow_uv.x > 1.0 || shadow_uv.y < 0.0 || shadow_uv.y > 1.0 {
+        return 1.0;
+    }
+
+    let ref_depth = ndc.z;
+    let texel_size = 1.0 / 2048.0;
+    var shadow = 0.0;
+    for (var y = -1i; y <= 1i; y++) {
+        for (var x = -1i; x <= 1i; x++) {
+            let offset = vec2<f32>(f32(x), f32(y)) * texel_size;
+            shadow += textureSampleCompareLevel(
+                shadow_map, shadow_sampler, shadow_uv + offset, ref_depth,
+            );
+        }
+    }
+    return shadow / 9.0;
 }
 
 struct FragOut {
@@ -104,8 +130,11 @@ fn fs_main(in: VSOut) -> FragOut {
         discard;
     }
 
-    // Grid color: neutral gray
-    out.color = vec4<f32>(0.5, 0.5, 0.5, alpha);
+    // Shadow: darken the grid where objects cast shadows
+    let shadow = calc_shadow(world_pos);
+    let brightness = mix(0.15, 0.5, shadow);
+
+    out.color = vec4<f32>(brightness, brightness, brightness, alpha);
 
     // Compute proper depth from world position
     let clip = globals.view_proj * vec4<f32>(world_pos, 1.0);
